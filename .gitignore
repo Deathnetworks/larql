@@ -34,3 +34,8 @@ experiments/
 vindexes/
 .pids/
 docs/replay/
+/.agents
+workflow_rules.md
+continuity_handover_xpu.md
+/crates/larql-compute/scratch
+crates/larql-compute/build_log.txt

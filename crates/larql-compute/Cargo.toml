@@ -17,6 +17,14 @@ rayon = "1.10"
 # Tests/benches depend on it too — keep both lists in sync.
 larql-models = { path = "../larql-models" }
 
+# XPU / SYCL Backend
+cxx = { version = "1.0", optional = true }
+once_cell = "1.19"
+
+# Vulkan Backend
+vulkano = { version = "0.34", optional = true }
+vulkano-shaders = { version = "0.34", optional = true }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 blas-src = { version = "0.10", features = ["openblas"], default-features = false }
 openblas-src = { version = "0.10", features = ["system"] }
@@ -31,17 +39,19 @@ objc = { version = "0.2", optional = true }
 blas-src = { version = "0.10", features = ["accelerate"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-blas-src = { version = "0.10", features = ["openblas"], default-features = false }
-openblas-src = { version = "0.10", features = ["system"] }
+blas-src = { version = "0.10", features = ["intel-mkl"], default-features = false }
 
 
 [features]
 default = []
 metal = ["dep:metal", "dep:objc"]
+xpu = ["dep:cxx", "cxx-build"]
+vulkan = ["dep:vulkano", "dep:vulkano-shaders"]
 # cuda = []  # Future: CUDA backend
 
 [build-dependencies]
 cc = "1.0"
+cxx-build = { version = "1.0", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

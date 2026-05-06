@@ -66,6 +66,12 @@ pub mod pipeline;
 #[cfg(feature = "metal")]
 pub mod metal;
 
+#[cfg(feature = "xpu")]
+pub mod xpu;
+
+#[cfg(feature = "vulkan")]
+pub mod vulkan;
+
 // ── Re-exports: pipeline types ──
 
 pub use pipeline::{
@@ -128,8 +134,25 @@ pub fn default_backend() -> Box<dyn ComputeBackend> {
             m.calibrate();
             return Box::new(m);
         }
-        eprintln!("[compute] Metal not available, falling back to CPU");
+        eprintln!("[compute] Metal not available, falling back...");
     }
+
+    #[cfg(feature = "xpu")]
+    {
+        if let Some(x) = xpu::XpuBackend::new() {
+            return Box::new(x);
+        }
+        eprintln!("[compute] XPU not available, falling back...");
+    }
+
+    #[cfg(feature = "vulkan")]
+    {
+        if let Some(v) = vulkan::VulkanBackend::new() {
+            return Box::new(v);
+        }
+        eprintln!("[compute] Vulkan not available, falling back...");
+    }
+
     Box::new(cpu::CpuBackend)
 }
 
