@@ -1,0 +1,44 @@
+#version 450
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) readonly buffer InDown { float DownOut[]; };
+layout(set = 0, binding = 1) readonly buffer InH { float HPostAttn[]; };
+layout(set = 0, binding = 2) readonly buffer Weight { float W[]; };
+layout(set = 0, binding = 3) writeonly buffer OutH { float NewH[]; };
+
+layout(push_constant) uniform PushConstants {
+    uint len;
+    float eps;
+    float offset;
+} pcs;
+
+shared float tg_red;
+
+void main() {
+    uint tid = gl_LocalInvocationID.x;
+    uint sg_id = gl_SubgroupID;
+    uint lane = gl_SubgroupInvocationID;
+
+    // Phase A: RMS of DownOut
+    float p = 0.0f;
+    for (uint i = tid; i < pcs.len; i += 256) {
+        float v = DownOut[i];
+        p += v * v;
+    }
+    float s = subgroupSum(p);
+    if (lane == 0) {
+        if (sg_id == 0) tg_red = 0.0;
+    }
+    barrier();
+    if (lane == 0) atomicAdd(tg_red, s);
+    barrier();
+    float inv_rms = 1.0f / sqrt(tg_red / float(pcs.len) + pcs.eps);
+
+    // Phase B: Norm + Residual Add
+    for (uint i = tid; i < pcs.len; i += 256) {
+        float normed = DownOut[i] * inv_rms * (W[i] + pcs.offset);
+        NewH[i] = HPostAttn[i] + normed;
+    }
+}

@@ -1,0 +1,57 @@
+#version 450
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) readonly buffer InputX { float X[]; };
+layout(set = 0, binding = 1) readonly buffer Weight { float W[]; };
+layout(set = 0, binding = 2) readonly buffer Bias { float B[]; };
+layout(set = 0, binding = 3) writeonly buffer Output { float Out[]; };
+
+layout(push_constant) uniform PushConstants {
+    uint len;
+    float eps;
+    float offset;
+    uint has_bias;
+} pcs;
+
+shared float tg_sum;
+shared float tg_var;
+
+void main() {
+    uint tid = gl_LocalInvocationID.x;
+    uint sg_id = gl_SubgroupID;
+    uint lane = gl_SubgroupInvocationID;
+    
+    // Compute mean
+    float partial_sum = 0.0f;
+    for (uint i = tid; i < pcs.len; i += 256) {
+        partial_sum += X[i];
+    }
+    float sg_sum = subgroupSum(partial_sum);
+    if (lane == 0) tg_sum = 0.0; // Reset shared (unsafe if multiple subgroups write)
+    barrier();
+    if (lane == 0) atomicAdd(tg_sum, sg_sum);
+    barrier();
+    float mean = tg_sum / float(pcs.len);
+
+    // Compute variance
+    float partial_var = 0.0f;
+    for (uint i = tid; i < pcs.len; i += 256) {
+        float diff = X[i] - mean;
+        partial_var += diff * diff;
+    }
+    float sg_var_sum = subgroupSum(partial_var);
+    if (lane == 0) tg_var = 0.0; 
+    barrier();
+    if (lane == 0) atomicAdd(tg_var, sg_var_sum);
+    barrier();
+    float inv_std = 1.0f / sqrt(tg_var / float(pcs.len) + pcs.eps);
+
+    // Apply normalization
+    for (uint i = tid; i < pcs.len; i += 256) {
+        float val = (X[i] - mean) * inv_std * (W[i] + pcs.offset);
+        if (pcs.has_bias == 1) val += B[i];
+        Out[i] = val;
+    }
+}

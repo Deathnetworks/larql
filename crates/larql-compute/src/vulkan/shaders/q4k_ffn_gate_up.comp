@@ -1,0 +1,102 @@
+#version 450
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+
+layout(local_size_x = 128) in; // 4 subgroups of 32
+
+layout(set = 0, binding = 0) readonly buffer WeightGate { uint Wg[]; };
+layout(set = 0, binding = 1) readonly buffer WeightUp { uint Wu[]; };
+layout(set = 0, binding = 2) readonly buffer VectorX { float X[]; };
+layout(set = 0, binding = 3) writeonly buffer OutputGate { float G_out[]; };
+layout(set = 0, binding = 4) writeonly buffer OutputUp { float U_out[]; };
+
+layout(push_constant) uniform PushConstants {
+    uint N;
+    uint K;
+} pcs;
+
+float decode_f16(uint bits) {
+    uint s = (bits >> 15) & 1u;
+    uint e = (bits >> 10) & 0x1Fu;
+    uint m = bits & 0x3FFu;
+    if (e == 0u) {
+        if (m == 0u) return s == 1u ? -0.0f : 0.0f;
+        return (s == 1u ? -1.0f : 1.0f) * ldexp(float(m), -24);
+    } else if (e == 31u) {
+        return m == 0u ? (s == 1u ? -1.0/0.0 : 1.0/0.0) : 0.0/0.0;
+    }
+    return (s == 1u ? -1.0f : 1.0f) * ldexp(float(m | 0x400u), int(e) - 15 - 10);
+}
+
+uint get_byte(bool is_up, uint byte_idx) {
+    uint word = is_up ? Wu[byte_idx / 4] : Wg[byte_idx / 4];
+    return (word >> (8 * (byte_idx % 4))) & 0xFFu;
+}
+
+uint get_ushort(bool is_up, uint byte_idx) {
+    return get_byte(is_up, byte_idx) | (get_byte(is_up, byte_idx + 1) << 8);
+}
+
+void main() {
+    uint Q4K_GU_ROWS_PER_TG = 4;
+    uint Q4K_GU_BLOCK_SIZE = 144;
+    
+    uint tgs_per_mat = (pcs.N + Q4K_GU_ROWS_PER_TG - 1u) / Q4K_GU_ROWS_PER_TG;
+    bool is_up = (gl_WorkGroupID.x >= tgs_per_mat);
+    uint mat_tg = is_up ? (gl_WorkGroupID.x - tgs_per_mat) : gl_WorkGroupID.x;
+
+    uint row_idx = mat_tg * Q4K_GU_ROWS_PER_TG + gl_SubgroupID;
+    if (row_idx >= pcs.N) return;
+
+    const uint superblocks = pcs.K / 256u;
+    const uint bytes_per_row = superblocks * Q4K_GU_BLOCK_SIZE;
+    uint row_w_base = row_idx * bytes_per_row;
+
+    uint lane = gl_SubgroupInvocationID;
+    const uint ix = lane & 1u;
+    const uint tid = lane >> 1u;
+    const uint j = tid >> 1u;
+    const uint sh = tid & 1u;
+    const bool hi = (j & 1u) != 0u;
+    const uint group = j >> 1u;
+
+    float acc = 0.0f;
+
+    for (uint sb = ix; sb < superblocks; sb += 2u) {
+        uint block_base = row_w_base + sb * Q4K_GU_BLOCK_SIZE;
+        float d = decode_f16(get_ushort(is_up, block_base));
+        float dmin = decode_f16(get_ushort(is_up, block_base + 2));
+
+        uint sc, mn;
+        if (j < 4u) {
+            sc = get_byte(is_up, block_base + 4 + j) & 0x3Fu;
+            mn = get_byte(is_up, block_base + 4 + j + 4) & 0x3Fu;
+        } else {
+            sc = (get_byte(is_up, block_base + 4 + j + 4) & 0x0Fu) | ((get_byte(is_up, block_base + 4 + j - 4) >> 6u) << 4u);
+            mn = (get_byte(is_up, block_base + 4 + j + 4) >> 4u) | ((get_byte(is_up, block_base + 4 + j) >> 6u) << 4u);
+        }
+        float scale = d * float(sc);
+        float mmin = dmin * float(mn);
+
+        uint x_base = sb * 256u + j * 32u + sh * 16u;
+        float xl[16];
+        for (uint l = 0; l < 16; l++) { xl[l] = X[x_base + l]; }
+
+        uint qs_base = block_base + 16u + group * 32u + sh * 16u;
+        float sumy = 0.0f;
+        for (uint l = 0; l < 16; l++) { sumy += xl[l]; }
+
+        float dot_acc = 0.0f;
+        for (uint l = 0; l < 16; l++) {
+            uint byte = get_byte(is_up, qs_base + l);
+            float nib = hi ? float((byte >> 4u) & 0x0Fu) : float(byte & 0x0Fu);
+            dot_acc += nib * xl[l];
+        }
+        acc += scale * dot_acc - mmin * sumy;
+    }
+
+    acc = subgroupAdd(acc);
+    if (lane == 0) {
+        if (is_up) U_out[row_idx] = acc;
+        else G_out[row_idx] = acc;
+    }
+}

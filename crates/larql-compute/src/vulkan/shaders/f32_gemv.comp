@@ -1,0 +1,47 @@
+#version 450
+
+layout(local_size_x = 256) in; // 8 subgroups of 32
+
+layout(set = 0, binding = 0) readonly buffer Weights { float W[]; }; // [N, K] row-major
+layout(set = 0, binding = 1) readonly buffer VectorX { float X[]; }; // [K]
+layout(set = 0, binding = 2) writeonly buffer Output { float out_y[]; }; // [N]
+
+layout(push_constant) uniform PushConstants {
+    uint N;
+    uint K;
+} pcs;
+
+void main() {
+    uint tid = gl_LocalInvocationID.x;
+    uint sg_id = gl_SubgroupID;
+    uint lane = gl_SubgroupInvocationID;
+    uint tg_id = gl_WorkGroupID.x;
+
+    // One row per subgroup
+    uint row = tg_id * 8 + sg_id;
+    if (row >= pcs.N) return;
+
+    uint w_base = row * pcs.K;
+    float acc = 0.0f;
+
+    // Stride-32 over K with unrolling
+    float a0 = 0.0f, a1 = 0.0f, a2 = 0.0f, a3 = 0.0f;
+    uint k = lane;
+    for (; k + 96 < pcs.K; k += 128) {
+        a0 += W[w_base + k     ] * X[k     ];
+        a1 += W[w_base + k + 32] * X[k + 32];
+        a2 += W[w_base + k + 64] * X[k + 64];
+        a3 += W[w_base + k + 96] * X[k + 96];
+    }
+    acc = (a0 + a1) + (a2 + a3);
+    for (; k < pcs.K; k += 32) {
+        acc += W[w_base + k] * X[k];
+    }
+
+    // Final subgroup reduction
+    acc = subgroupAdd(acc);
+
+    if (lane == 0) {
+        out_y[row] = acc;
+    }
+}

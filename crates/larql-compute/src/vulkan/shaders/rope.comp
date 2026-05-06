@@ -1,0 +1,64 @@
+#version 450
+
+layout(local_size_x = 32, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) buffer DataQ { float Q[]; };
+layout(set = 0, binding = 1) buffer DataK { float K[]; };
+
+layout(push_constant) uniform PushConstants {
+    uint head_dim;
+    float rope_base;
+    uint pos;
+    uint rotary_dim;
+    uint num_q;
+    uint num_kv;
+    uint mode; // 0: single head at pos, 1: batched qk
+} pcs;
+
+void main() {
+    uint d = gl_GlobalInvocationID.x; // pair index
+    uint h = gl_GlobalInvocationID.y; // head index
+
+    uint rdim = (pcs.rotary_dim == 0) ? pcs.head_dim : min(pcs.rotary_dim, pcs.head_dim);
+    uint hdim = rdim / 2;
+    
+    if (d >= hdim) return;
+
+    if (pcs.mode == 0) {
+        if (h > 0) return; // single head mode
+        float freq = 1.0f / pow(pcs.rope_base, float(2 * d) / float(rdim));
+        float angle = float(pcs.pos) * freq;
+        float cos_a = cos(angle);
+        float sin_a = sin(angle);
+
+        float re = Q[d];
+        float im = Q[d + hdim];
+        Q[d]        = re * cos_a - im * sin_a;
+        Q[d + hdim] = re * sin_a + im * cos_a;
+    } else {
+        // batched qk
+        uint total_heads = pcs.num_q + pcs.num_kv;
+        if (h >= total_heads) return;
+
+        bool is_q = (h < pcs.num_q);
+        uint local_h = is_q ? h : (h - pcs.num_q);
+        uint base_idx = local_h * pcs.head_dim;
+
+        float freq = 1.0f / pow(pcs.rope_base, float(2 * d) / float(rdim));
+        float angle = float(pcs.pos) * freq;
+        float cos_a = cos(angle);
+        float sin_a = sin(angle);
+
+        if (is_q) {
+            float re = Q[base_idx + d];
+            float im = Q[base_idx + d + hdim];
+            Q[base_idx + d]        = re * cos_a - im * sin_a;
+            Q[base_idx + d + hdim] = re * sin_a + im * cos_a;
+        } else {
+            float re = K[base_idx + d];
+            float im = K[base_idx + d + hdim];
+            K[base_idx + d]        = re * cos_a - im * sin_a;
+            K[base_idx + d + hdim] = re * sin_a + im * cos_a;
+        }
+    }
+}

@@ -1,0 +1,183 @@
+#version 450
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) readonly buffer QIn { float Q_in[]; };
+layout(set = 0, binding = 1) readonly buffer KIn { float K_in[]; };
+layout(set = 0, binding = 2) readonly buffer VIn { float V_in[]; };
+layout(set = 0, binding = 3) buffer KCache { float K_cache[]; };
+layout(set = 0, binding = 4) buffer VCache { float V_cache[]; };
+layout(set = 0, binding = 5) writeonly buffer Output { float x_out[]; };
+layout(set = 0, binding = 6) readonly buffer QWeight { float q_weight[]; };
+layout(set = 0, binding = 7) readonly buffer KWeight { float k_weight[]; };
+
+layout(push_constant) uniform PushConstants {
+    uint T;
+    uint head_dim;
+    uint num_q;
+    uint num_kv;
+    float scale;
+    uint window_size;
+    float eps;
+    float qk_offset;
+    float rope_base;
+    uint rotary_dim;
+} pcs;
+
+shared float tg_q[256];
+shared float tg_k_normed[256];
+shared float tg_red[8];
+shared float tg_scores[1024];
+
+void main() {
+    uint head = gl_WorkGroupID.x;
+    if (head >= pcs.num_q) return;
+    uint kv_head = head / (pcs.num_q / pcs.num_kv);
+    uint pos = pcs.T - 1u;
+    uint tid = gl_LocalInvocationID.x;
+    uint tg_sz = gl_WorkGroupSize.x;
+    uint sg_id = gl_SubgroupID;
+    uint lane = gl_SubgroupInvocationID;
+    uint n_sg = (tg_sz + gl_SubgroupSize - 1) / gl_SubgroupSize;
+
+    uint rdim = (pcs.rotary_dim == 0) ? pcs.head_dim : min(pcs.rotary_dim, pcs.head_dim);
+    uint hdim = rdim / 2u;
+
+    // Phase 1: Parallel RMS
+    float partial_q = 0.0f;
+    float partial_k = 0.0f;
+    for (uint d = tid; d < pcs.head_dim; d += tg_sz) {
+        float vq = Q_in[head * pcs.head_dim + d];
+        float vk = K_in[kv_head * pcs.head_dim + d];
+        partial_q += vq * vq;
+        partial_k += vk * vk;
+    }
+    
+    // Reduce Q
+    float ss_q = subgroupAdd(partial_q);
+    if (lane == 0) tg_red[sg_id] = ss_q;
+    barrier();
+    if (tid == 0) {
+        float total = 0.0f;
+        for (uint i = 0; i < n_sg; i++) total += tg_red[i];
+        tg_red[0] = total;
+    }
+    barrier();
+    ss_q = tg_red[0];
+    barrier();
+
+    // Reduce K
+    float ss_k = subgroupAdd(partial_k);
+    if (lane == 0) tg_red[sg_id] = ss_k;
+    barrier();
+    if (tid == 0) {
+        float total = 0.0f;
+        for (uint i = 0; i < n_sg; i++) total += tg_red[i];
+        tg_red[0] = total;
+    }
+    barrier();
+    ss_k = tg_red[0];
+
+    float inv_rms_q = 1.0f / sqrt(ss_q / float(pcs.head_dim) + pcs.eps);
+    float inv_rms_k = 1.0f / sqrt(ss_k / float(pcs.head_dim) + pcs.eps);
+
+    // Phase 2: Normed Q, K
+    for (uint d = tid; d < pcs.head_dim; d += tg_sz) {
+        float vq = Q_in[head * pcs.head_dim + d];
+        float vk = K_in[kv_head * pcs.head_dim + d];
+        tg_q[d] = (vq * inv_rms_q) * (pcs.qk_offset + q_weight[d]);
+        tg_k_normed[d] = (vk * inv_rms_k) * (pcs.qk_offset + k_weight[d]);
+    }
+    barrier();
+
+    // Phase 3: Shared RoPE
+    uint cache_off = pos * pcs.num_kv * pcs.head_dim + kv_head * pcs.head_dim;
+    for (uint d = tid; d < hdim; d += tg_sz) {
+        float freq = 1.0f / pow(pcs.rope_base, float(2 * d) / float(rdim));
+        float angle = float(pos) * freq;
+        float cos_a = cos(angle);
+        float sin_a = sin(angle);
+
+        float qr = tg_q[d];
+        float qi = tg_q[d + hdim];
+        tg_q[d] = qr * cos_a - qi * sin_a;
+        tg_q[d + hdim] = qr * sin_a + qi * cos_a;
+
+        float kr = tg_k_normed[d];
+        float ki = tg_k_normed[d + hdim];
+        K_cache[cache_off + d] = kr * cos_a - ki * sin_a;
+        K_cache[cache_off + d + hdim] = kr * sin_a + ki * cos_a;
+    }
+    for (uint d = tid + rdim; d < pcs.head_dim; d += tg_sz) {
+        K_cache[cache_off + d] = tg_k_normed[d];
+    }
+
+    // Phase 4: V Cache
+    for (uint d = tid; d < pcs.head_dim; d += tg_sz) {
+        VCache[cache_off + d] = V_in[kv_head * pcs.head_dim + d];
+    }
+    
+    memoryBarrierBuffer();
+    barrier();
+
+    // Phase 5: Scores
+    uint t_start = (pcs.window_size > 0 && pcs.T > pcs.window_size) ? pcs.T - pcs.window_size : 0;
+    float local_max = -1e30f;
+    for (uint t = t_start + tid; t < pcs.T; t += tg_sz) {
+        uint k_off = t * pcs.num_kv * pcs.head_dim + kv_head * pcs.head_dim;
+        float dot = 0.0f;
+        for (uint d = 0; d < pcs.head_dim; d++) {
+            dot += tg_q[d] * KCache[k_off + d];
+        }
+        dot *= pcs.scale;
+        tg_scores[t - t_start] = dot;
+        local_max = max(local_max, dot);
+    }
+
+    float global_max = subgroupMax(local_max);
+    if (lane == 0) tg_red[sg_id] = global_max;
+    barrier();
+    if (tid == 0) {
+        float m = tg_red[0];
+        for (uint i = 1; i < n_sg; i++) m = max(m, tg_red[i]);
+        tg_red[0] = m;
+    }
+    barrier();
+    global_max = tg_red[0];
+
+    // Phase 6: Softmax
+    float local_sum = 0.0f;
+    for (uint t = t_start + tid; t < pcs.T; t += tg_sz) {
+        float w = exp(tg_scores[t - t_start] - global_max);
+        tg_scores[t - t_start] = w;
+        local_sum += w;
+    }
+
+    float global_sum = subgroupAdd(local_sum);
+    if (lane == 0) tg_red[sg_id] = global_sum;
+    barrier();
+    if (tid == 0) {
+        float s = 0.0f;
+        for (uint i = 0; i < n_sg; i++) s += tg_red[i];
+        tg_red[0] = s;
+    }
+    barrier();
+    global_sum = tg_red[0];
+    float inv_sum = 1.0f / global_sum;
+
+    for (uint t = t_start + tid; t < pcs.T; t += tg_sz) {
+        tg_scores[t - t_start] *= inv_sum;
+    }
+    barrier();
+
+    // Phase 7: Output
+    uint out_off = head * pcs.head_dim;
+    for (uint d = tid; d < pcs.head_dim; d += tg_sz) {
+        float acc = 0.0f;
+        for (uint t = t_start; t < pcs.T; t++) {
+            acc += tg_scores[t - t_start] * VCache[t * pcs.num_kv * pcs.head_dim + kv_head * pcs.head_dim + d];
+        }
+        x_out[out_off + d] = acc;
+    }
+}

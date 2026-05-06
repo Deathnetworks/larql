@@ -1,0 +1,42 @@
+#version 450
+
+layout(local_size_x = 32, local_size_y = 32) in;
+
+layout(set = 0, binding = 0) readonly buffer MatrixA { float A[]; };
+layout(set = 0, binding = 1) readonly buffer MatrixB { float B[]; };
+layout(set = 0, binding = 2) writeonly buffer MatrixC { float C[]; };
+
+layout(push_constant) uniform PushConstants {
+    uint M;
+    uint N;
+    uint K;
+} pcs;
+
+shared float As[32][32];
+shared float Bs[32][32];
+
+void main() {
+    uint row = gl_WorkGroupID.y * 32 + gl_LocalInvocationID.y;
+    uint col = gl_WorkGroupID.x * 32 + gl_LocalInvocationID.x;
+    
+    float acc = 0.0f;
+    uint tiles = (pcs.K + 31) / 32;
+
+    for (uint t = 0; t < tiles; t++) {
+        uint ac = t * 32 + gl_LocalInvocationID.x;
+        uint bk = t * 32 + gl_LocalInvocationID.y;
+
+        As[gl_LocalInvocationID.y][gl_LocalInvocationID.x] = (row < pcs.M && ac < pcs.K) ? A[row * pcs.K + ac] : 0.0f;
+        Bs[gl_LocalInvocationID.y][gl_LocalInvocationID.x] = (col < pcs.N && bk < pcs.K) ? B[col * pcs.K + bk] : 0.0f;
+
+        barrier();
+        for (uint i = 0; i < 32; i++) {
+            acc += As[gl_LocalInvocationID.y][i] * Bs[i][gl_LocalInvocationID.x];
+        }
+        barrier();
+    }
+
+    if (row < pcs.M && col < pcs.N) {
+        C[row * pcs.N + col] = acc;
+    }
+}

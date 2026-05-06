@@ -1,0 +1,46 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) readonly buffer Query { float Q[]; };
+layout(set = 0, binding = 1) readonly buffer Gates { uint G[]; }; // Byte-accessed
+layout(set = 0, binding = 2) writeonly buffer Scores { float S[]; };
+
+layout(push_constant) uniform PushConstants {
+    uint hidden;
+    uint n_feat;
+    uint mode; // 0: f32, 1: Q8
+} pcs;
+
+void main() {
+    uint tid = gl_GlobalInvocationID.x;
+    if (tid >= pcs.n_feat) return;
+
+    float acc = 0.0f;
+    if (pcs.mode == 0) {
+        // F32 Branch
+        uint base = tid * pcs.hidden;
+        for (uint i = 0; i < pcs.hidden; i++) {
+            // Need to read F32 from uint buffer
+            acc += Q[i] * uintBitsToFloat(G[base + i]);
+        }
+    } else {
+        // Q8 Branch: [scale (f32) | data (i8 x hidden)]
+        uint stride_bytes = 4 + pcs.hidden;
+        uint base_byte = tid * stride_bytes;
+        
+        // Read f32 scale from first 4 bytes
+        uint s_word = G[base_byte / 4];
+        float scale = uintBitsToFloat(s_word);
+        
+        uint data_base = base_byte + 4;
+        for (uint i = 0; i < pcs.hidden; i++) {
+            uint byte_idx = data_base + i;
+            uint word = G[byte_idx / 4];
+            uint b = (word >> (8 * (byte_idx % 4))) & 0xFFu;
+            int q = (b < 128) ? int(b) : int(b) - 256;
+            acc += Q[i] * (float(q) * scale);
+        }
+    }
+    S[tid] = acc;
+}

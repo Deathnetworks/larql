@@ -184,4 +184,61 @@ void q4k_proj(
     size_t k
 );
 
+void layer_norm(
+    const float* x,
+    const float* weight,
+    const float* bias,
+    float* out,
+    uint32_t len,
+    float eps,
+    float offset,
+    bool has_bias
+);
+
+void v_norm(
+    const float* x,
+    float* out,
+    uint32_t head_dim,
+    uint32_t num_heads,
+    float eps,
+    bool batched
+);
+
+void qk_norm_rope_fused(
+    float* q,
+    float* k,
+    const float* q_weight,
+    const float* k_weight,
+    uint32_t head_dim,
+    uint32_t num_q,
+    float eps,
+    float offset,
+    float rope_base,
+    uint32_t pos,
+    uint32_t rotary_dim
+);
+
+void q4k_q6k_qkv_proj(
+    const uint8_t* wq,
+    const uint8_t* wk,
+    const uint8_t* wv,
+    const float* x,
+    float* q_out,
+    float* k_out,
+    float* v_out,
+    uint32_t q_rows,
+    uint32_t k_rows,
+    uint32_t v_rows,
+    uint32_t k
+);
+
+void residual_ops(
+    const float* a,
+    const float* b,
+    float* out,
+    uint32_t len,
+    float scalar,
+    uint32_t mode
+);
+
 void check_sycl();

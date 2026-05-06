@@ -1,48 +1,66 @@
 //! XPU (SYCL) compute backend — Intel Arc / Xe Graphics.
-//!
-//! All operations go through the [`ComputeBackend`] trait. XPU-specific
-//! optimisations: USM (Unified Shared Memory) zero-copy buffers, SYCL 
-//! subgroup reductions, and Intel ICPX device bundling via a dedicated DLL.
-//!
-//! ## Modules
-//!
-//! - `kernels.cpp`: SYCL C++ kernels — compiled into `larql_xpu.dll`.
-//! - `ops/`:       GPU dispatch — modular dispatchers for each operation.
-//! - `trait_impl/`: Backend trait implementations (ComputeBackend, MatMul, etc.).
-//! - `buffers`:    SYCL USM buffer management.
-//! - `ffi`:        Low-level bridge to the SYCL DLL.
-//!
-//! ## Requirements
-//!
-//! - Intel oneAPI Base Toolkit (setvars.bat must be sourced).
-//! - Intel Arc Pro / Xe2 GPU or compatible SYCL device.
 
 pub mod buffers;
+pub mod calibrate;
 mod decode;
+mod decode_hybrid;
+pub mod diag;
+mod direct_ops;
 mod ffi;
+pub mod f32_ops;
+pub mod kernel;
+mod moe_dispatch;
 pub mod ops;
+mod pipeline;
+mod prefill;
+pub mod shaders;
+pub mod stages;
 mod trait_impl;
 
+use std::sync::{Arc, Mutex};
+use std::sync::atomic::AtomicUsize;
 use ffi::ffi as xpu_ffi;
+use buffers::BufferCache;
+use f32_ops::F32Ops;
+use ops::q4_common::Q4Pipelines;
 
 /// XPU (SYCL) compute backend.
-///
-/// Encapsulates the SYCL runtime and manages kernel dispatch to Intel GPUs.
-/// Built as a Bridge-to-DLL architecture to ensure stability on Windows.
-pub struct XpuBackend {}
+pub struct XpuBackend {
+    pub bufs: BufferCache,
+    pub f32_ops: F32Ops,
+    pub q4: Q4Pipelines,
+    flop_threshold: AtomicUsize,
+    kv_cache: Mutex<Option<ops::kv_cache::KVCache>>,
+    moe_scratch: Mutex<Option<moe_dispatch::MoeScratch>>,
+}
 
 impl XpuBackend {
     /// Create a new XPU backend.
-    ///
-    /// Initializes the SYCL queue and verifies device availability.
-    /// Returns `None` if no SYCL-compatible device is found or if the 
-    /// ICPX DLL fails to load.
     pub fn new() -> Option<Self> {
         xpu_ffi::check_sycl();
         if xpu_ffi::init_xpu() {
-            Some(Self {})
+            let bufs = BufferCache::new();
+            let f32_ops = F32Ops::new();
+            let q4 = Q4Pipelines { /* stubs */ };
+            Some(Self {
+                bufs,
+                f32_ops,
+                q4,
+                flop_threshold: AtomicUsize::new(calibrate::DEFAULT_FLOP_THRESHOLD),
+                kv_cache: Mutex::new(None),
+                moe_scratch: Mutex::new(None),
+            })
         } else {
             None
         }
+    }
+
+    pub fn calibrate(&self) {
+        let threshold = calibrate::calibrate(&self.f32_ops);
+        self.flop_threshold.store(threshold, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn flop_threshold(&self) -> usize {
+        self.flop_threshold.load(std::sync::atomic::Ordering::Relaxed)
     }
 }

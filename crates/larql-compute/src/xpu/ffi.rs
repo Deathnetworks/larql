@@ -127,6 +127,12 @@ pub mod ffi {
             k: u32,
         );
 
+        unsafe fn dll_layer_norm(x: *const f32, weight: *const f32, bias: *const f32, out: *mut f32, len: u32, eps: f32, offset: f32, has_bias: bool);
+        unsafe fn dll_v_norm(x: *const f32, out: *mut f32, head_dim: u32, num_heads: u32, eps: f32, batched: bool);
+        unsafe fn dll_qk_norm_rope_fused(q: *mut f32, k: *mut f32, q_w: *const f32, k_w: *const f32, head_dim: u32, num_q: u32, eps: f32, offset: f32, rope_base: f32, pos: u32, rdim: u32);
+        unsafe fn dll_q4k_q6k_qkv_proj(wq: *const u8, wk: *const u8, wv: *const u8, x: *const f32, q_out: *mut f32, k_out: *mut f32, v_out: *mut f32, q_r: u32, k_r: u32, v_r: u32, k: u32);
+        unsafe fn dll_residual_ops(a: *const f32, b: *const f32, out: *mut f32, len: u32, scalar: f32, mode: u32);
+
         unsafe fn q4k_proj(
             w4k: *const u8,
             x: *const f32,

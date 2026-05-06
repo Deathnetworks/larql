@@ -1,0 +1,100 @@
+#version 450
+
+layout(local_size_x_id = 0) in; // Vector dimension d (e.g. 256)
+
+layout(set = 0, binding = 0) readonly buffer InputF32 { float In[]; };
+layout(set = 0, binding = 1) buffer Norms { float N[]; };
+layout(set = 0, binding = 2) buffer PackedIndices { uint P[]; }; // u8 packed into u32
+
+layout(push_constant) uniform PushConstants {
+    uint d;
+    uint batch;
+} pcs;
+
+const float tq4_boundaries[15] = {
+    -0.0936, -0.0685, -0.0508, -0.0355,
+    -0.0216, -0.0099,  0.0000,  0.0099,
+    0.0216,  0.0355,  0.0508,  0.0685,
+    0.0936,  0.1295,  0.1750
+};
+
+bool tq_sign_flip(uint i) {
+    return ((i * 2654435761u) >> 16) != 0;
+}
+
+shared float shared_mem[1024];
+
+void main() {
+    uint elem = gl_LocalInvocationID.x;
+    uint vec_idx = gl_WorkGroupID.x;
+    if (vec_idx >= pcs.batch || elem >= pcs.d) return;
+
+    uint base = vec_idx * pcs.d;
+    shared_mem[elem] = In[base + elem];
+    barrier();
+
+    // Step 1: L2 Norm
+    if (elem == 0) {
+        float sum_sq = 0.0f;
+        for (uint i = 0; i < pcs.d; i++) {
+            sum_sq += shared_mem[i] * shared_mem[i];
+        }
+        N[vec_idx] = sqrt(sum_sq);
+    }
+    barrier();
+
+    float norm = N[vec_idx];
+    float inv_norm = (norm > 1e-12f) ? (1.0f / norm) : 0.0f;
+
+    // Step 2: Normalize
+    shared_mem[elem] *= inv_norm;
+    barrier();
+
+    // Step 3: Sign flips
+    if (tq_sign_flip(elem)) shared_mem[elem] = -shared_mem[elem];
+    barrier();
+
+    // Step 4: WHT
+    for (uint hstep = 1; hstep < pcs.d; hstep *= 2) {
+        uint blk = hstep * 2;
+        uint blk_idx = elem / blk;
+        uint within = elem % blk;
+        if (within < hstep) {
+            uint j = blk_idx * blk + within;
+            float a = shared_mem[j];
+            float b = shared_mem[j + hstep];
+            shared_mem[j] = a + b;
+            shared_mem[j + hstep] = a - b;
+        }
+        barrier();
+    }
+
+    shared_mem[elem] *= 1.0f / sqrt(float(pcs.d));
+
+    // Step 5: Sign flips again
+    if (tq_sign_flip(elem)) shared_mem[elem] = -shared_mem[elem];
+    barrier();
+
+    // Step 6: Lloyd-Max quantize
+    float y = shared_mem[elem];
+    uint idx = 0;
+    for (uint b = 0; b < 15; b++) {
+        if (y > tq4_boundaries[b]) idx = b + 1;
+    }
+
+    // Step 7: Pack 4-bit (u8 output)
+    uint byte_off = vec_idx * (pcs.d / 2) + elem / 2;
+    uint word_idx = byte_off / 4;
+    uint byte_in_word = byte_off % 4;
+
+    if (elem % 2 == 0) {
+        // Clear the nibble first (unsafe if multiple threads write to same word)
+        // In this implementation, we assume shared memory sync or atomic OR.
+        // For simplicity, we use atomicOr on the byte location.
+        atomicAnd(P[word_idx], ~(0x0Fu << (8 * byte_in_word)));
+        atomicOr(P[word_idx], (idx & 0x0Fu) << (8 * byte_in_word));
+    } else {
+        atomicAnd(P[word_idx], ~(0xF0u << (8 * byte_in_word)));
+        atomicOr(P[word_idx], ((idx & 0x0Fu) << 4) << (8 * byte_in_word));
+    }
+}

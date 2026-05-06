@@ -1,0 +1,79 @@
+#version 450
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) buffer QBuf { float Q[]; };
+layout(set = 0, binding = 1) buffer KBuf { float K[]; };
+layout(set = 0, binding = 2) readonly buffer QWeight { float QW[]; };
+layout(set = 0, binding = 3) readonly buffer KWeight { float KW[]; };
+
+layout(push_constant) uniform PushConstants {
+    uint head_dim;
+    uint num_q;
+    float eps;
+    float offset;
+    float rope_base;
+    uint pos;
+    uint rotary_dim;
+} pcs;
+
+shared float tg_red;
+
+void main() {
+    uint tid = gl_LocalInvocationID.x;
+    uint sg_id = gl_SubgroupID;
+    uint lane = gl_SubgroupInvocationID;
+    uint h_idx = gl_WorkGroupID.x;
+
+    bool is_q = (h_idx < pcs.num_q);
+    uint local_head = is_q ? h_idx : (h_idx - pcs.num_q);
+    uint base = local_head * pcs.head_dim;
+
+    // Phase 1: RMSNorm calculation
+    float partial = 0.0f;
+    for (uint i = tid; i < pcs.head_dim; i += 256) {
+        float v = is_q ? Q[base + i] : K[base + i];
+        partial += v * v;
+    }
+    float sg_sum = subgroupSum(partial);
+    if (lane == 0) {
+        if (sg_id == 0) tg_red = 0.0;
+    }
+    barrier();
+    if (lane == 0) atomicAdd(tg_red, sg_sum);
+    barrier();
+    float inv_rms = 1.0f / sqrt(tg_red / float(pcs.head_dim) + pcs.eps);
+
+    // Phase 2: Apply norm and weights
+    for (uint i = tid; i < pcs.head_dim; i += 256) {
+        if (is_q) {
+            Q[base + i] = (Q[base + i] * inv_rms) * (pcs.offset + QW[i]);
+        } else {
+            K[base + i] = (K[base + i] * inv_rms) * (pcs.offset + KW[i]);
+        }
+    }
+    barrier();
+
+    // Phase 3: RoPE rotation
+    uint rdim = (pcs.rotary_dim == 0) ? pcs.head_dim : min(pcs.rotary_dim, pcs.head_dim);
+    uint hdim = rdim / 2;
+    for (uint d = tid; d < hdim; d += 256) {
+        float freq = 1.0f / pow(pcs.rope_base, float(2 * d) / float(rdim));
+        float angle = float(pcs.pos) * freq;
+        float cos_a = cos(angle);
+        float sin_a = sin(angle);
+
+        if (is_q) {
+            float re = Q[base + d];
+            float im = Q[base + d + hdim];
+            Q[base + d] = re * cos_a - im * sin_a;
+            Q[base + d + hdim] = re * sin_a + im * cos_a;
+        } else {
+            float re = K[base + d];
+            float im = K[base + d + hdim];
+            K[base + d] = re * cos_a - im * sin_a;
+            K[base + d + hdim] = re * sin_a + im * cos_a;
+        }
+    }
+}

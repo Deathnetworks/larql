@@ -1,0 +1,129 @@
+#version 450
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+
+layout(local_size_x = 256) in; // 8 subgroups of 32
+
+layout(set = 0, binding = 0) readonly buffer Wq { uint data_wq[]; };
+layout(set = 0, binding = 1) readonly buffer Wk { uint data_wk[]; };
+layout(set = 0, binding = 2) readonly buffer Wv { uint data_wv[]; };
+layout(set = 0, binding = 3) readonly buffer VectorX { float X[]; };
+layout(set = 0, binding = 4) buffer QOut { float Q_out[]; };
+layout(set = 0, binding = 5) buffer KOut { float K_out[]; };
+layout(set = 0, binding = 6) buffer VOut { float V_out[]; };
+
+layout(push_constant) uniform PushConstants {
+    uint q_rows;
+    uint k_rows;
+    uint v_rows;
+    uint K;
+    uint mode; // 0: fused QKV, 1: single proj
+} pcs;
+
+float decode_f16(uint bits) {
+    uint s = (bits >> 15) & 1u;
+    uint e = (bits >> 10) & 0x1Fu;
+    uint m = bits & 0x3FFu;
+    if (e == 0u) {
+        if (m == 0u) return s == 1u ? -0.0f : 0.0f;
+        return (s == 1u ? -1.0f : 1.0f) * ldexp(float(m), -24);
+    } else if (e == 31u) {
+        return m == 0u ? (s == 1u ? -1.0/0.0 : 1.0/0.0) : 0.0/0.0;
+    }
+    return (s == 1u ? -1.0f : 1.0f) * ldexp(float(m | 0x400u), int(e) - 15 - 10);
+}
+
+uint get_byte(uint buffer_id, uint byte_idx) {
+    uint word;
+    if (buffer_id == 0) word = data_wq[byte_idx / 4];
+    else if (buffer_id == 1) word = data_wk[byte_idx / 4];
+    else word = data_wv[byte_idx / 4];
+    return (word >> (8 * (byte_idx % 4))) & 0xFFu;
+}
+
+void unpack_scales_mins(uint buffer_id, uint base, out uint scales[8], out uint mins[8]) {
+    for (uint j = 0; j < 4; j++) {
+        scales[j] = get_byte(buffer_id, base + j) & 0x3Fu;
+        mins[j] = get_byte(buffer_id, base + j + 4) & 0x3Fu;
+    }
+    for (uint j = 4; j < 8; j++) {
+        scales[j] = (get_byte(buffer_id, base + j + 4) & 0x0Fu) | ((get_byte(buffer_id, base + j - 4) >> 6u) << 4u);
+        mins[j] = (get_byte(buffer_id, base + j + 4) >> 4u) | ((get_byte(buffer_id, base + j) >> 6u) << 4u);
+    }
+}
+
+void main() {
+    uint tid = gl_LocalInvocationID.x;
+    uint sg_id = gl_SubgroupID;
+    uint lane = gl_SubgroupInvocationID;
+    uint tg_id = gl_WorkGroupID.x;
+
+    uint total_rows = pcs.q_rows + pcs.k_rows + pcs.v_rows;
+    uint global_row = tg_id * 8 + sg_id;
+    if (global_row >= total_rows && pcs.mode == 0) return;
+    if (global_row >= pcs.q_rows && pcs.mode == 1) return;
+
+    uint buffer_id;
+    uint local_row;
+    if (pcs.mode == 0) {
+        if (global_row < pcs.q_rows) {
+            buffer_id = 0; local_row = global_row;
+        } else if (global_row < pcs.q_rows + pcs.k_rows) {
+            buffer_id = 1; local_row = global_row - pcs.q_rows;
+        } else {
+            buffer_id = 2; local_row = global_row - pcs.q_rows - pcs.k_rows;
+        }
+    } else {
+        buffer_id = 0; local_row = global_row;
+    }
+
+    uint superblocks = pcs.K / 256;
+    uint bytes_per_row = superblocks * 144;
+    uint row_base = local_row * bytes_per_row;
+
+    float acc = 0.0f;
+    for (uint sb = lane; sb < superblocks; sb += 32) {
+        uint block_base = row_base + sb * 144;
+        float d = decode_f16(get_byte(buffer_id, block_base) | (get_byte(buffer_id, block_base + 1) << 8));
+        float dmin = decode_f16(get_byte(buffer_id, block_base + 2) | (get_byte(buffer_id, block_base + 3) << 8));
+
+        uint scales[8];
+        uint mins[8];
+        unpack_scales_mins(buffer_id, block_base + 4, scales, mins);
+
+        uint qs_base = block_base + 16;
+        uint x_base = sb * 256;
+        float sb_acc = 0.0f;
+        for (uint g = 0; g < 4; g++) {
+            uint sub_lo = 2 * g;
+            uint sub_hi = 2 * g + 1;
+            float sc_lo = d * float(scales[sub_lo]);
+            float sc_hi = d * float(scales[sub_hi]);
+            float mn_lo = dmin * float(mins[sub_lo]);
+            float mn_hi = dmin * float(mins[sub_hi]);
+            float dot_lo = 0.0f, sum_lo = 0.0f;
+            float dot_hi = 0.0f, sum_hi = 0.0f;
+            for (uint l = 0; l < 32; l++) {
+                uint byte = get_byte(buffer_id, qs_base + g * 32 + l);
+                float xlo = X[x_base + sub_lo * 32 + l];
+                float xhi = X[x_base + sub_hi * 32 + l];
+                dot_lo += float(byte & 0x0Fu) * xlo;
+                sum_lo += xlo;
+                dot_hi += float((byte >> 4) & 0x0Fu) * xhi;
+                sum_hi += xhi;
+            }
+            sb_acc += sc_lo * dot_lo - mn_lo * sum_lo;
+            sb_acc += sc_hi * dot_hi - mn_hi * sum_hi;
+        }
+        acc += sb_acc;
+    }
+
+    acc = subgroupAdd(acc);
+    if (lane == 0) {
+        if (pcs.mode == 1) Q_out[local_row] = acc;
+        else {
+            if (buffer_id == 0) Q_out[local_row] = acc;
+            else if (buffer_id == 1) K_out[local_row] = acc;
+            else V_out[local_row] = acc;
+        }
+    }
+}

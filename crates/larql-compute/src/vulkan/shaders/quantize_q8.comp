@@ -1,0 +1,39 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) readonly buffer InputF32 { float input_f[]; };
+layout(set = 0, binding = 1) writeonly buffer OutputQ8 { int output_q[]; }; // packed i8
+layout(set = 0, binding = 2) writeonly buffer OutputScales { float scales[]; };
+
+layout(push_constant) uniform PushConstants {
+    uint K;
+} pcs;
+
+void main() {
+    uint block = gl_GlobalInvocationID.x;
+    uint num_blocks = pcs.K / 32;
+    if (block >= num_blocks) return;
+
+    uint off = block * 32;
+    float amax = 0.0f;
+    for (uint j = 0; j < 32; j++) {
+        float v = abs(input_f[off + j]);
+        if (v > amax) amax = v;
+    }
+
+    float scale = amax / 127.0f;
+    float inv = (scale > 0.0f) ? (1.0f / scale) : 0.0f;
+    scales[block] = scale;
+
+    for (uint j = 0; j < 32; j++) {
+        float v = input_f[off + j] * inv;
+        int q = int(round(clamp(v, -128.0f, 127.0f)));
+        // Note: Writing as int to output_q buffer. 
+        // If the buffer is byte-addressed, we need to pack 4 per int or use 8-bit types.
+        // Standard Vulkan GLSL requires 'int8_t' extension for true i8.
+        // For simplicity in this dispatch, we assume the host interprets the low 8 bits.
+        // In a production GGUF loader, we would pack these.
+        output_q[off + j] = q;
+    }
+}

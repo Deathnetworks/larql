@@ -1,0 +1,26 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) readonly buffer InputA { float A[]; };
+layout(set = 0, binding = 1) readonly buffer InputB { float B[]; }; // Used by residual_add
+layout(set = 0, binding = 2) writeonly buffer Output { float Out[]; };
+
+layout(push_constant) uniform PushConstants {
+    uint len;
+    float scalar;
+    uint mode; // 0: copy, 1: add, 2: scale
+} pcs;
+
+void main() {
+    uint tid = gl_GlobalInvocationID.x;
+    if (tid >= pcs.len) return;
+
+    if (pcs.mode == 0) {
+        Out[tid] = A[tid];
+    } else if (pcs.mode == 1) {
+        Out[tid] = A[tid] + B[tid];
+    } else if (pcs.mode == 2) {
+        Out[tid] = A[tid] * pcs.scalar;
+    }
+}

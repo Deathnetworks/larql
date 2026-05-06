@@ -1,0 +1,30 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) readonly buffer Input { float x_in[]; };
+layout(set = 0, binding = 1) writeonly buffer Output { float x_out[]; };
+
+layout(push_constant) uniform PushConstants {
+    uint N;
+    uint mode; // 0: SiLU, 1: GELU
+} pcs;
+
+void main() {
+    uint tid = gl_GlobalInvocationID.x;
+    if (tid >= pcs.N) return;
+
+    float x = x_in[tid];
+    
+    if (pcs.mode == 0) {
+        // SiLU / Swish: x / (1 + exp(-x))
+        x_out[tid] = x / (1.0f + exp(-x));
+    } else {
+        // GELU with tanh approximation
+        float c = 0.7978845608f; // sqrt(2/pi)
+        float y = c * (x + 0.044715f * x * x * x);
+        y = clamp(y, -15.0f, 15.0f);
+        float t = tanh(y);
+        x_out[tid] = 0.5f * x * (1.0f + t);
+    }
+}

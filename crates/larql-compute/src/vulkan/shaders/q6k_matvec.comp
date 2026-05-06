@@ -1,0 +1,85 @@
+#version 450
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+
+layout(local_size_x = 128) in; // 4 subgroups of 32
+
+layout(set = 0, binding = 0) readonly buffer WeightW6K { uint W6K[]; };
+layout(set = 0, binding = 1) readonly buffer VectorX { float X[]; };
+layout(set = 0, binding = 2) writeonly buffer Output { float out_f[]; };
+
+layout(push_constant) uniform PushConstants {
+    uint N;
+    uint K;
+} pcs;
+
+float decode_f16(uint bits) {
+    uint s = (bits >> 15) & 1u;
+    uint e = (bits >> 10) & 0x1Fu;
+    uint m = bits & 0x3FFu;
+    if (e == 0u) {
+        if (m == 0u) return s == 1u ? -0.0f : 0.0f;
+        return (s == 1u ? -1.0f : 1.0f) * ldexp(float(m), -24);
+    } else if (e == 31u) {
+        return m == 0u ? (s == 1u ? -1.0/0.0 : 1.0/0.0) : 0.0/0.0;
+    }
+    return (s == 1u ? -1.0f : 1.0f) * ldexp(float(m | 0x400u), int(e) - 15 - 10);
+}
+
+uint get_byte(uint byte_idx) {
+    uint word = W6K[byte_idx / 4];
+    return (word >> (8 * (byte_idx % 4))) & 0xFFu;
+}
+
+int get_char(uint byte_idx) {
+    uint b = get_byte(byte_idx);
+    return b < 128 ? int(b) : int(b) - 256;
+}
+
+void main() {
+    uint sg_id = gl_SubgroupID;
+    uint lane = gl_SubgroupInvocationID;
+    uint row_idx = gl_WorkGroupID.x * 4 + sg_id;
+    if (row_idx >= pcs.N) return;
+
+    const uint superblocks = pcs.K / 256u;
+    const uint bytes_per_row = superblocks * 210u;
+    uint row_w_base = row_idx * bytes_per_row;
+
+    const uint ix = lane & 1u;
+    const uint tid = lane >> 1u;
+    const uint base = tid << 2u;
+    const uint sc_base = tid >> 2u;
+
+    float acc = 0.0f;
+
+    for (uint i = ix; i < superblocks; i += 2u) {
+        uint block_base = row_w_base + i * 210u;
+        uint d_bits = get_byte(block_base + 208) | (get_byte(block_base + 209) << 8);
+        float d = decode_f16(d_bits);
+
+        const uint xb = i * 256u + base;
+        float xl[16];
+        xl[0] = X[xb]; xl[1] = X[xb+1]; xl[2] = X[xb+2]; xl[3] = X[xb+3];
+        xl[4] = X[xb+64]; xl[5] = X[xb+65]; xl[6] = X[xb+66]; xl[7] = X[xb+67];
+        xl[8] = X[xb+128]; xl[9] = X[xb+129]; xl[10] = X[xb+130]; xl[11] = X[xb+131];
+        xl[12] = X[xb+192]; xl[13] = X[xb+193]; xl[14] = X[xb+194]; xl[15] = X[xb+195];
+
+        for (uint pass = 0; pass < 4; pass++) {
+            uint b = base + (pass * 64);
+            uint ql_a = get_byte(block_base + (b >> 1u));
+            uint ql_b = get_byte(block_base + (b >> 1u) + 1u);
+            uint hi = get_byte(block_base + 128u + (b >> 2u));
+            float _sc = d * float(get_char(block_base + 192u + sc_base + (pass * 4)));
+
+            float v0 = float(int((ql_a & 0x0Fu) | ((hi & 0x03u) << 4u)) - 32);
+            float v1 = float(int(((ql_a >> 4u) & 0x0Fu) | ((hi & 0x0Cu) << 2u)) - 32);
+            float v2 = float(int((ql_b & 0x0Fu) | (hi & 0x30u)) - 32);
+            float v3 = float(int(((ql_b >> 4u) & 0x0Fu) | ((hi & 0xC0u) >> 2u)) - 32);
+
+            acc += _sc * (v0 * xl[pass*4] + v1 * xl[pass*4+1] + v2 * xl[pass*4+2] + v3 * xl[pass*4+3]);
+        }
+    }
+
+    acc = subgroupAdd(acc);
+    if (lane == 0) out_f[row_idx] = acc;
+}

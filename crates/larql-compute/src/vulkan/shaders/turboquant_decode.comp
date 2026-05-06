@@ -1,0 +1,71 @@
+#version 450
+
+layout(local_size_x_id = 0) in; 
+
+layout(set = 0, binding = 0) readonly buffer Norms { float N[]; };
+layout(set = 0, binding = 1) readonly buffer PackedIndices { uint P[]; };
+layout(set = 0, binding = 2) writeonly buffer OutputF32 { float Out[]; };
+
+layout(push_constant) uniform PushConstants {
+    uint d;
+    uint batch;
+} pcs;
+
+const float tq4_centroids[16] = {
+    -0.1089, -0.0782, -0.0588, -0.0427,
+    -0.0283, -0.0148, -0.0050,  0.0050,
+     0.0148,  0.0283,  0.0427,  0.0588,
+     0.0782,  0.1089,  0.1500,  0.2000
+};
+
+bool tq_sign_flip(uint i) {
+    return ((i * 2654435761u) >> 16) != 0;
+}
+
+shared float shared_mem[1024];
+
+void main() {
+    uint elem = gl_LocalInvocationID.x;
+    uint vec_idx = gl_WorkGroupID.x;
+    if (vec_idx >= pcs.batch || elem >= pcs.d) return;
+
+    // Step 1: Unpack
+    uint byte_off = vec_idx * (pcs.d / 2) + elem / 2;
+    uint word_idx = byte_off / 4;
+    uint byte_in_word = byte_off % 4;
+    uint word = P[word_idx];
+    uint b = (word >> (8 * byte_in_word)) & 0xFFu;
+    uint idx = (elem % 2 == 0) ? (b & 0x0Fu) : (b >> 4u);
+
+    // Step 2: Centroid
+    shared_mem[elem] = tq4_centroids[idx];
+    barrier();
+
+    // Step 3: Sign flips
+    if (tq_sign_flip(elem)) shared_mem[elem] = -shared_mem[elem];
+    barrier();
+
+    // Step 4: WHT
+    for (uint hstep = 1; hstep < pcs.d; hstep *= 2) {
+        uint blk = hstep * 2;
+        uint blk_idx = elem / blk;
+        uint within = elem % blk;
+        if (within < hstep) {
+            uint j = blk_idx * blk + within;
+            float a = shared_mem[j];
+            float b = shared_mem[j + hstep];
+            shared_mem[j] = a + b;
+            shared_mem[j + hstep] = a - b;
+        }
+        barrier();
+    }
+
+    shared_mem[elem] *= 1.0f / sqrt(float(pcs.d));
+
+    // Step 5: Sign flips again
+    if (tq_sign_flip(elem)) shared_mem[elem] = -shared_mem[elem];
+    barrier();
+
+    // Step 6: Rescale
+    Out[vec_idx * pcs.d + elem] = shared_mem[elem] * N[vec_idx];
+}

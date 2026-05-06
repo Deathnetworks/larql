@@ -1,0 +1,56 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) readonly buffer InputX { float x[]; };
+layout(set = 0, binding = 1) readonly buffer Weight { float w[]; };
+layout(set = 0, binding = 2) writeonly buffer Output { float out_y[]; };
+
+layout(push_constant) uniform PushConstants {
+    uint len;
+    float eps;
+    float offset;
+} pcs;
+
+shared float tg_p[8]; // Enough for 8 subgroups (256 / 32)
+
+void main() {
+    uint tid = gl_LocalInvocationID.x;
+    uint tg_sz = gl_WorkGroupSize.x;
+    uint sg_id = gl_SubgroupID;
+    uint lane = gl_SubgroupInvocationID;
+
+    // Phase 1: Cooperative sum_sq
+    float partial = 0.0f;
+    for (uint i = tid; i < pcs.len; i += tg_sz) {
+        partial += x[i] * x[i];
+    }
+
+    // Subgroup reduction (requires GL_KHR_shader_subgroup_arithmetic)
+    float sg_sum = subgroupAdd(partial);
+
+    if (lane == 0) {
+        tg_p[sg_id] = sg_sum;
+    }
+
+    barrier(); // Sync threadgroup memory
+
+    float sum_sq = 0.0f;
+    if (tid == 0) {
+        uint n_sg = (tg_sz + gl_SubgroupSize - 1) / gl_SubgroupSize;
+        for (uint i = 0; i < n_sg; i++) {
+            sum_sq += tg_p[i];
+        }
+        tg_p[0] = sum_sq;
+    }
+
+    barrier();
+    sum_sq = tg_p[0];
+
+    float rms = 1.0f / sqrt(sum_sq / float(pcs.len) + pcs.eps);
+
+    // Phase 2: Apply norm and write output
+    for (uint i = tid; i < pcs.len; i += tg_sz) {
+        out_y[i] = x[i] * (w[i] + pcs.offset) * rms;
+    }
+}

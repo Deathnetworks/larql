@@ -1,0 +1,69 @@
+#version 450
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) readonly buffer InH { float H[]; };
+layout(set = 0, binding = 1) readonly buffer InO { float O[]; };
+layout(set = 0, binding = 2) readonly buffer WeightPost { float WP[]; };
+layout(set = 0, binding = 3) readonly buffer WeightFFN { float WF[]; };
+layout(set = 0, binding = 4) buffer OutFFN { float FFN_norm[]; };
+layout(set = 0, binding = 5) writeonly buffer OutH { float H_post[]; };
+
+layout(push_constant) uniform PushConstants {
+    uint len;
+    float eps;
+    float offset;
+} pcs;
+
+shared float tg_red;
+
+void main() {
+    uint tid = gl_LocalInvocationID.x;
+    uint sg_id = gl_SubgroupID;
+    uint lane = gl_SubgroupInvocationID;
+
+    // Phase A: RMS of O
+    float p_o = 0.0f;
+    for (uint i = tid; i < pcs.len; i += 256) {
+        float v = O[i];
+        p_o += v * v;
+    }
+    float s_o = subgroupSum(p_o);
+    if (lane == 0) {
+        if (sg_id == 0) tg_red = 0.0;
+    }
+    barrier();
+    if (lane == 0) atomicAdd(tg_red, s_o);
+    barrier();
+    float inv_rms_o = 1.0f / sqrt(tg_red / float(pcs.len) + pcs.eps);
+
+    // Phase B: Normed O + Residual -> H_post
+    for (uint i = tid; i < pcs.len; i += 256) {
+        float normed_o = O[i] * inv_rms_o * (WP[i] + pcs.offset);
+        float h_sum = H[i] + normed_o;
+        H_post[i] = h_sum;
+        FFN_norm[i] = h_sum; // Stash for Phase C
+    }
+    barrier();
+
+    // Phase C: RMS of H_sum (from FFN_norm stash)
+    float p_h = 0.0f;
+    for (uint i = tid; i < pcs.len; i += 256) {
+        float v = FFN_norm[i];
+        p_h += v * v;
+    }
+    float s_h = subgroupSum(p_h);
+    if (lane == 0) {
+        if (sg_id == 0) tg_red = 0.0;
+    }
+    barrier();
+    if (lane == 0) atomicAdd(tg_red, s_h);
+    barrier();
+    float inv_rms_h = 1.0f / sqrt(tg_red / float(pcs.len) + pcs.eps);
+
+    // Phase D: Final FFN Norm
+    for (uint i = tid; i < pcs.len; i += 256) {
+        FFN_norm[i] = FFN_norm[i] * inv_rms_h * (WF[i] + pcs.offset);
+    }
+}

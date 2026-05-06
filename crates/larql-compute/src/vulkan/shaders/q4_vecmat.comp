@@ -1,0 +1,59 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) readonly buffer Activation { float act_in[]; };
+layout(set = 0, binding = 1) readonly buffer WeightsQ4 { uint W4[]; };
+layout(set = 0, binding = 2) writeonly buffer Output { float x_out[]; };
+
+layout(push_constant) uniform PushConstants {
+    uint N;
+    uint K;
+} pcs;
+
+float decode_f16(uint bits) {
+    uint s = (bits >> 15) & 1u;
+    uint e = (bits >> 10) & 0x1Fu;
+    uint m = bits & 0x3FFu;
+    if (e == 0u) {
+        if (m == 0u) return s == 1u ? -0.0f : 0.0f;
+        return (s == 1u ? -1.0f : 1.0f) * ldexp(float(m), -24);
+    } else if (e == 31u) {
+        return m == 0u ? (s == 1u ? -1.0/0.0 : 1.0/0.0) : 0.0/0.0;
+    }
+    return (s == 1u ? -1.0f : 1.0f) * ldexp(float(m | 0x400u), int(e) - 15 - 10);
+}
+
+uint get_byte(uint byte_idx) {
+    uint word = W4[byte_idx / 4];
+    return (word >> (8 * (byte_idx % 4))) & 0xFFu;
+}
+
+uint get_ushort(uint byte_idx) {
+    return get_byte(byte_idx) | (get_byte(byte_idx + 1) << 8);
+}
+
+void main() {
+    uint tid = gl_GlobalInvocationID.x;
+    if (tid >= pcs.K) return;
+
+    uint blocks_per_row = pcs.K / 32;
+    uint bytes_per_row = blocks_per_row * 18;
+    uint block_idx = tid / 32;
+    uint elem_in_block = tid % 32;
+    uint nibble_idx = elem_in_block / 2;
+    bool is_high = (elem_in_block & 1) != 0;
+
+    float acc = 0.0f;
+    for (uint row = 0; row < pcs.N; row++) {
+        float act = act_in[row];
+        if (abs(act) < 1e-10f) continue;
+        
+        uint block_base = row * bytes_per_row + block_idx * 18;
+        float q4_scale = decode_f16(get_ushort(block_base));
+        uint byte = get_byte(block_base + 2 + nibble_idx);
+        int q_val = is_high ? (int(byte >> 4) - 8) : (int(byte & 0x0F) - 8);
+        acc += float(q_val) * q4_scale * act;
+    }
+    x_out[tid] = acc;
+}

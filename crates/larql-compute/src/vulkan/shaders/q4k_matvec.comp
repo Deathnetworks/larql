@@ -1,0 +1,97 @@
+#version 450
+
+layout(local_size_x = 128) in; // 4 subgroups of 32
+
+layout(set = 0, binding = 0) readonly buffer Weights4K { uint W4K[]; }; // Packed bytes as uints
+layout(set = 0, binding = 1) readonly buffer VectorX { float X[]; };
+layout(set = 0, binding = 2) writeonly buffer Output { float out_y[]; };
+
+layout(push_constant) uniform PushConstants {
+    uint N;
+    uint K;
+} pcs;
+
+// Helper to decode f16 from bits
+float decode_f16(uint bits) {
+    uint s = (bits >> 15) & 1u;
+    uint e = (bits >> 10) & 0x1Fu;
+    uint m = bits & 0x3FFu;
+    if (e == 0u) {
+        if (m == 0u) return s == 1u ? -0.0f : 0.0f;
+        return (s == 1u ? -1.0f : 1.0f) * ldexp(float(m), -24); // Denormal
+    } else if (e == 31u) {
+        return m == 0u ? (s == 1u ? -1.0/0.0 : 1.0/0.0) : 0.0/0.0; // Inf/NaN
+    }
+    return (s == 1u ? -1.0f : 1.0f) * ldexp(float(m | 0x400u), int(e) - 15 - 10);
+}
+
+// GLSL byte access from uint array
+uint get_byte(uint byte_idx) {
+    uint word = W4K[byte_idx / 4];
+    return (word >> (8 * (byte_idx % 4))) & 0xFFu;
+}
+
+uint get_ushort(uint byte_idx) {
+    return get_byte(byte_idx) | (get_byte(byte_idx + 1) << 8);
+}
+
+void main() {
+    uint tid = gl_LocalInvocationID.x;
+    uint sg_id = gl_SubgroupID;
+    uint lane = gl_SubgroupInvocationID;
+    uint tg_id = gl_WorkGroupID.x;
+
+    uint row_idx = tg_id * 4 + sg_id;
+    if (row_idx >= pcs.N) return;
+
+    const uint Q4K_BLOCK_SIZE = 144;
+    const uint superblocks = pcs.K / 256;
+    const uint bytes_per_row = superblocks * Q4K_BLOCK_SIZE;
+    uint row_w_base = row_idx * bytes_per_row;
+
+    const uint ix = lane & 1u;
+    const uint sub_tid = lane >> 1u; // 0..15
+    const uint j = sub_tid >> 1u;   // 0..7
+    const uint sh = sub_tid & 1u;    // 0..1
+
+    const bool hi = (j & 1u) != 0u;
+    const uint group = j >> 1u;
+
+    float acc = 0.0f;
+
+    for (uint sb = ix; sb < superblocks; sb += 2) {
+        uint block_base = row_w_base + sb * Q4K_BLOCK_SIZE;
+        float d = decode_f16(get_ushort(block_base));
+        float dmin = decode_f16(get_ushort(block_base + 2));
+
+        uint sc, mn;
+        if (j < 4) {
+            sc = get_byte(block_base + 4 + j) & 0x3Fu;
+            mn = get_byte(block_base + 4 + j + 4) & 0x3Fu;
+        } else {
+            sc = (get_byte(block_base + 4 + j + 4) & 0x0Fu) | ((get_byte(block_base + 4 + j - 4) >> 6u) << 4u);
+            mn = (get_byte(block_base + 4 + j + 4) >> 4u) | ((get_byte(block_base + 4 + j) >> 6u) << 4u);
+        }
+        float scale = d * float(sc);
+        float mmin = dmin * float(mn);
+
+        uint x_base = sb * 256 + j * 32 + sh * 16;
+        float sumy = 0.0f;
+        float dot_acc = 0.0f;
+
+        uint qs_base = block_base + 16 + group * 32 + sh * 16;
+        for (uint l = 0; l < 16; l++) {
+            float xv = X[x_base + l];
+            sumy += xv;
+            uint byte = get_byte(qs_base + l);
+            float nib = hi ? float((byte >> 4) & 0x0Fu) : float(byte & 0x0Fu);
+            dot_acc += nib * xv;
+        }
+        acc += scale * dot_acc - mmin * sumy;
+    }
+
+    acc = subgroupAdd(acc);
+    if (lane == 0) {
+        out_y[row_idx] = acc;
+    }
+}

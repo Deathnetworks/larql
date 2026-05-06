@@ -1,5 +1,18 @@
 use super::*;
 
+mod diag;
+mod encode_attn;
+mod encode_ffn;
+mod encode_post_ffn;
+mod encode_qkv;
+pub mod gpu_timing;
+mod moe_combine;
+mod moe_interleave;
+pub mod profile;
+mod setup;
+
+pub use profile::ProfileTimings;
+
 impl VulkanBackend {
     pub fn decode_token(
         &self,

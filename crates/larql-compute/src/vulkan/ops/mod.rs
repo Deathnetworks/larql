@@ -1,17 +1,11 @@
-//! Vulkan operation dispatch — one file per operation type.
-//!
-//! Replicates the modular structure of the Metal backend for consistency.
-//! Each module handles dispatch for one category of compute operation.
+//! Vulkan operation dispatch.
 
-pub mod f32_gemv;
-pub mod q8_quantize;
-pub mod q4k_matvec;
-pub mod q6k_matvec;
-pub mod attn_fused;
-pub mod rms_norm;
-pub mod silu;
-pub mod rope;
-pub mod q4k_ffn_gate_up;
-pub mod q4k_qkv_proj;
+pub mod full_layer;
+pub mod full_pipeline;
+pub mod kv_cache;
+pub mod q4_batched;
+pub mod q4_common;
+pub mod q4_f32_matvec;
+pub mod q4_matvec;
 pub mod q4_vecmat;
-pub mod turboquant;
+pub mod rms_norm;
