@@ -1,4 +1,8 @@
 #version 450
+#extension GL_EXT_shader_atomic_float : enable
+#extension GL_KHR_shader_subgroup_basic : enable
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+
 #extension GL_KHR_shader_subgroup_arithmetic : enable
 
 layout(local_size_x = 256) in;
@@ -28,7 +32,7 @@ void main() {
             float v = X[i];
             partial += v * v;
         }
-        float sg_sum = subgroupSum(partial);
+        float sg_sum = subgroupAdd(partial);
         if (lane == 0) {
             if (sg_id == 0) tg_red = 0.0;
         }
@@ -48,7 +52,7 @@ void main() {
             float v = X[base + i];
             partial += v * v;
         }
-        float sg_sum = subgroupSum(partial);
+        float sg_sum = subgroupAdd(partial);
         if (lane == 0) {
             if (sg_id == 0) tg_red = 0.0;
         }

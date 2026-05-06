@@ -60,7 +60,7 @@ pub fn encode(
         let q8_layout = q8_quant_pipeline.layout().set_layouts().get(0).unwrap();
 
         let q8_set = PersistentDescriptorSet::new(
-            backend.descriptor_set_allocator.clone(),
+            &backend.descriptor_set_allocator,
             q8_layout.clone(),
             [
                 WriteDescriptorSet::buffer(0, attn_in_slice.clone()),
@@ -71,7 +71,7 @@ pub fn encode(
         ).unwrap();
 
         let q8_pcs = shaders::quantize_q8::PushConstants {
-            len: dim_val,
+            K: dim_val,
         };
 
         builder

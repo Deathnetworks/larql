@@ -53,7 +53,7 @@ pub fn encode_qk_norm(
         let q_slice = q_buf.clone().slice(q_buf_off .. q_buf_off + q_head_bytes as u64);
 
         let q_set = PersistentDescriptorSet::new(
-            backend.descriptor_set_allocator.clone(),
+            &backend.descriptor_set_allocator,
             layout.clone(),
             [
                 WriteDescriptorSet::buffer(0, q_slice.clone()), // X
@@ -84,7 +84,7 @@ pub fn encode_qk_norm(
         let k_slice = k_buf.clone().slice(k_buf_off .. k_buf_off + kv_head_bytes as u64);
 
         let k_set = PersistentDescriptorSet::new(
-            backend.descriptor_set_allocator.clone(),
+            &backend.descriptor_set_allocator,
             layout.clone(),
             [
                 WriteDescriptorSet::buffer(0, k_slice.clone()),
@@ -136,7 +136,7 @@ pub fn encode_v_norm(
         let v_slice = v_buf.clone().slice(v_buf_off .. v_buf_off + kv_head_bytes as u64);
 
         let v_set = PersistentDescriptorSet::new(
-            backend.descriptor_set_allocator.clone(),
+            &backend.descriptor_set_allocator,
             layout.clone(),
             [
                 WriteDescriptorSet::buffer(0, v_slice.clone()),
@@ -150,7 +150,7 @@ pub fn encode_v_norm(
             head_dim: hd_val,
             num_heads: nkv_val,
             eps,
-            offset: 0.0,
+            mode: 0,
         };
 
         builder

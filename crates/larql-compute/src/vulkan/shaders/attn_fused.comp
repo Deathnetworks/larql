@@ -1,5 +1,8 @@
 #version 450
 #extension GL_KHR_shader_subgroup_arithmetic : enable
+#extension GL_KHR_shader_subgroup_basic : enable
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+
 
 layout(local_size_x = 256) in;
 
@@ -115,7 +118,7 @@ void main() {
 
     // Phase 4: V Cache
     for (uint d = tid; d < pcs.head_dim; d += tg_sz) {
-        VCache[cache_off + d] = V_in[kv_head * pcs.head_dim + d];
+        V_cache[cache_off + d] = V_in[kv_head * pcs.head_dim + d];
     }
     
     memoryBarrierBuffer();
@@ -128,7 +131,7 @@ void main() {
         uint k_off = t * pcs.num_kv * pcs.head_dim + kv_head * pcs.head_dim;
         float dot = 0.0f;
         for (uint d = 0; d < pcs.head_dim; d++) {
-            dot += tg_q[d] * KCache[k_off + d];
+            dot += tg_q[d] * K_cache[k_off + d];
         }
         dot *= pcs.scale;
         tg_scores[t - t_start] = dot;
@@ -176,7 +179,7 @@ void main() {
     for (uint d = tid; d < pcs.head_dim; d += tg_sz) {
         float acc = 0.0f;
         for (uint t = t_start; t < pcs.T; t++) {
-            acc += tg_scores[t - t_start] * VCache[t * pcs.num_kv * pcs.head_dim + kv_head * pcs.head_dim + d];
+            acc += tg_scores[t - t_start] * V_cache[t * pcs.num_kv * pcs.head_dim + kv_head * pcs.head_dim + d];
         }
         x_out[out_off + d] = acc;
     }

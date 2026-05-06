@@ -1,5 +1,6 @@
 //! Vulkan operation dispatch.
 
+pub mod f32_gemv;
 pub mod full_layer;
 pub mod full_pipeline;
 pub mod kv_cache;
@@ -8,4 +9,9 @@ pub mod q4_common;
 pub mod q4_f32_matvec;
 pub mod q4_matvec;
 pub mod q4_vecmat;
+pub mod q4k_matvec;
+pub mod q8_quantize;
 pub mod rms_norm;
+pub mod rope;
+pub mod silu;
+pub mod turboquant;

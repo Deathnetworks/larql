@@ -1,8 +1,7 @@
 //! Q8 quantization dispatch for Vulkan.
 
-use std::sync::Arc;
 use vulkano::descriptor_set::{PersistentDescriptorSet, WriteDescriptorSet};
-use vulkano::pipeline::{ComputePipeline, Pipeline, PipelineBindPoint, PipelineLayout, compute::ComputePipelineCreateInfo};
+use vulkano::pipeline::{Pipeline, PipelineBindPoint};
 use vulkano::command_buffer::{AutoCommandBufferBuilder, CommandBufferUsage, PrimaryCommandBufferAbstract};
 use vulkano::sync::{self, GpuFuture};
 
@@ -18,17 +17,7 @@ pub fn dispatch(
     let queue = backend.queue();
     
     let shader = shaders::quantize_q8::load(device.clone()).ok()?;
-    let pipeline = ComputePipeline::new(
-        device.clone(),
-        None,
-        ComputePipelineCreateInfo::stage_layout(
-            shader.entry_point("main").unwrap(),
-            PipelineLayout::new(
-                device.clone(),
-                vulkano::pipeline::layout::PipelineLayoutCreateInfo::default(),
-            ).unwrap(),
-        ),
-    ).ok()?;
+    let pipeline = VulkanBackend::create_compute_pipeline(device, &shader);
 
     let num_blocks = (k / 32) as usize;
     let mut q8_out = vec![0i8; k as usize];
@@ -38,7 +27,7 @@ pub fn dispatch(
     let q8_out_buf = VulkanBuffer::new(device.clone(), q8_out.len(), vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
     let scales_buf = VulkanBuffer::new(device.clone(), scales.len() * 4, vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
 
-    let layout = pipeline.layout().set_layouts().get(0).unwrap();
+    let layout = pipeline.layout().set_layouts().get(0)?;
     let set = PersistentDescriptorSet::new(
         backend.descriptor_set_allocator(),
         layout.clone(),
@@ -50,7 +39,7 @@ pub fn dispatch(
         [],
     ).ok()?;
 
-    let push_constants = shaders::quantize_q8::PushConstants { k };
+    let push_constants = shaders::quantize_q8::PushConstants { K: k };
 
     let mut builder = AutoCommandBufferBuilder::primary(
         backend.command_buffer_allocator(),
@@ -82,7 +71,7 @@ pub fn dispatch(
         .wait(None)
         .ok()?;
 
-    q8_out_buf.copy_to_slice_i8(&mut q8_out);
+    q8_out_buf.copy_to_slice(&mut q8_out);
     scales_buf.copy_to_slice(&mut scales);
     Some((q8_out, scales))
 }

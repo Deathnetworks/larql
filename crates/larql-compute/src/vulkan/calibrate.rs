@@ -43,7 +43,7 @@ pub fn calibrate(backend: &VulkanBackend, f32_ops: &F32Ops) -> usize {
         });
 
         if let Some(v_us) = vulkan_us {
-            if v_us < cpu_us {
+            if v_us < cpu_us.unwrap_or(u64::MAX) {
                 best = best.min(flops);
             }
         }

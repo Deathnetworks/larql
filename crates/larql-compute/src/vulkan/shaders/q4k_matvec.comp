@@ -1,5 +1,8 @@
 #version 450
 
+#extension GL_KHR_shader_subgroup_basic : enable
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+
 layout(local_size_x = 128) in; // 4 subgroups of 32
 
 layout(set = 0, binding = 0) readonly buffer Weights4K { uint W4K[]; }; // Packed bytes as uints

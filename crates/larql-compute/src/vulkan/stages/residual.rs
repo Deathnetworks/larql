@@ -70,7 +70,7 @@ pub fn encode_post_attn(
             let normed = scratch_alloc(hidden_bytes);
 
             let rms_set = PersistentDescriptorSet::new(
-                backend.descriptor_set_allocator.clone(),
+                &backend.descriptor_set_allocator,
                 rms_layout.clone(),
                 [
                     WriteDescriptorSet::buffer(0, o_slice.clone()),
@@ -100,7 +100,7 @@ pub fn encode_post_attn(
             // In Vulkan, the grid is [1, 1, 1] if the shader implements the loop, which rms_norm.comp usually does.
 
             let res_set = PersistentDescriptorSet::new(
-                backend.descriptor_set_allocator.clone(),
+                &backend.descriptor_set_allocator,
                 res_layout.clone(),
                 [
                     WriteDescriptorSet::buffer(0, h_slice.clone()),
@@ -128,7 +128,7 @@ pub fn encode_post_attn(
         } else {
             // Pre-norm: residual add first (h + O).
             let res_set = PersistentDescriptorSet::new(
-                backend.descriptor_set_allocator.clone(),
+                &backend.descriptor_set_allocator,
                 res_layout.clone(),
                 [
                     WriteDescriptorSet::buffer(0, h_slice.clone()),
@@ -159,7 +159,7 @@ pub fn encode_post_attn(
         let ffn_norm_slice = ffn_norm_out.clone().slice(h_off .. h_off + hidden_bytes);
 
         let rms_set = PersistentDescriptorSet::new(
-            backend.descriptor_set_allocator.clone(),
+            &backend.descriptor_set_allocator,
             rms_layout.clone(),
             [
                 WriteDescriptorSet::buffer(0, h_post_slice.clone()),
@@ -193,7 +193,7 @@ pub fn encode_post_attn(
             let q8s_slice = ffn_q8s_buf.clone().slice(q8s_off .. q8s_off + q8s_bytes);
 
             let q8_set = PersistentDescriptorSet::new(
-                backend.descriptor_set_allocator.clone(),
+                &backend.descriptor_set_allocator,
                 q8_layout.clone(),
                 [
                     WriteDescriptorSet::buffer(0, ffn_norm_slice.clone()),
@@ -204,7 +204,7 @@ pub fn encode_post_attn(
             ).unwrap();
 
             let q8_pcs = shaders::quantize_q8::PushConstants {
-                len: hidden_val,
+                K: hidden_val,
             };
 
             builder
@@ -259,7 +259,7 @@ pub fn encode_post_ffn(
                 let normed = scratch_alloc(hidden_bytes);
 
                 let rms_set = PersistentDescriptorSet::new(
-                    backend.descriptor_set_allocator.clone(),
+                    &backend.descriptor_set_allocator,
                     rms_layout.clone(),
                     [
                         WriteDescriptorSet::buffer(0, down_slice.clone()),
@@ -286,7 +286,7 @@ pub fn encode_post_ffn(
                     .unwrap();
 
                 let res_set = PersistentDescriptorSet::new(
-                    backend.descriptor_set_allocator.clone(),
+                    &backend.descriptor_set_allocator,
                     res_layout.clone(),
                     [
                         WriteDescriptorSet::buffer(0, h_post_slice.clone()),
@@ -317,7 +317,7 @@ pub fn encode_post_ffn(
 
         // Pre-norm or post-norm-without-post_ffn_norm: plain residual.
         let res_set = PersistentDescriptorSet::new(
-            backend.descriptor_set_allocator.clone(),
+            &backend.descriptor_set_allocator,
             res_layout.clone(),
             [
                 WriteDescriptorSet::buffer(0, h_post_slice.clone()),

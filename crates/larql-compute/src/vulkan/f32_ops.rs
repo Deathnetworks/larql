@@ -3,47 +3,23 @@
 use std::sync::Arc;
 use ndarray::{Array2, ArrayView2};
 use vulkano::descriptor_set::{PersistentDescriptorSet, WriteDescriptorSet};
-use vulkano::pipeline::{ComputePipeline, Pipeline, PipelineBindPoint, PipelineLayout, compute::ComputePipelineCreateInfo};
+use vulkano::pipeline::{Pipeline, PipelineBindPoint};
 use vulkano::command_buffer::{AutoCommandBufferBuilder, CommandBufferUsage, PrimaryCommandBufferAbstract};
 use vulkano::sync::{self, GpuFuture};
+use vulkano::device::{Device, Queue};
 
-use crate::vulkan::{VulkanBackend, shaders};
+use crate::vulkan::shaders;
 use crate::vulkan::buffers::VulkanBuffer;
 
 pub struct F32Ops {
-    sgemm_pipeline: Arc<ComputePipeline>,
-    transb_pipeline: Arc<ComputePipeline>,
+    sgemm_pipeline: Arc<vulkano::pipeline::ComputePipeline>,
+    transb_pipeline: Arc<vulkano::pipeline::ComputePipeline>,
 }
 
 impl F32Ops {
-    pub fn new(backend: &VulkanBackend) -> Option<Self> {
-        let device = backend.device();
-        
-        let sgemm_shader = shaders::sgemm::load(device.clone()).ok()?;
-        let sgemm_pipeline = ComputePipeline::new(
-            device.clone(),
-            None,
-            ComputePipelineCreateInfo::stage_layout(
-                sgemm_shader.entry_point("main").unwrap(),
-                PipelineLayout::new(
-                    device.clone(),
-                    vulkano::pipeline::layout::PipelineLayoutCreateInfo::default(),
-                ).unwrap(),
-            ),
-        ).ok()?;
-
-        let transb_shader = shaders::sgemm_transb::load(device.clone()).ok()?;
-        let transb_pipeline = ComputePipeline::new(
-            device.clone(),
-            None,
-            ComputePipelineCreateInfo::stage_layout(
-                transb_shader.entry_point("main").unwrap(),
-                PipelineLayout::new(
-                    device.clone(),
-                    vulkano::pipeline::layout::PipelineLayoutCreateInfo::default(),
-                ).unwrap(),
-            ),
-        ).ok()?;
+    pub fn new(device: &Arc<Device>, _queue: &Arc<Queue>) -> Option<Self> {
+        let sgemm_pipeline = super::VulkanBackend::create_compute_pipeline(device, &shaders::sgemm::load(device.clone()).ok()?);
+        let transb_pipeline = super::VulkanBackend::create_compute_pipeline(device, &shaders::sgemm_transb::load(device.clone()).ok()?);
 
         Some(Self {
             sgemm_pipeline,
@@ -53,7 +29,7 @@ impl F32Ops {
 
     pub fn dispatch_notrans(
         &self,
-        backend: &VulkanBackend,
+        backend: &super::VulkanBackend,
         a_data: &[f32],
         b_data: &[f32],
         m: usize,
@@ -65,7 +41,7 @@ impl F32Ops {
 
     pub fn dispatch_transb(
         &self,
-        backend: &VulkanBackend,
+        backend: &super::VulkanBackend,
         a_data: &[f32],
         b_data: &[f32],
         m: usize,
@@ -77,8 +53,8 @@ impl F32Ops {
 
     fn dispatch_internal(
         &self,
-        backend: &VulkanBackend,
-        pipeline: &Arc<ComputePipeline>,
+        backend: &super::VulkanBackend,
+        pipeline: &Arc<vulkano::pipeline::ComputePipeline>,
         a_data: &[f32],
         b_data: &[f32],
         m: usize,
@@ -92,7 +68,7 @@ impl F32Ops {
         let b_buf = VulkanBuffer::from_slice(device.clone(), b_data, vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
         let out_buf = VulkanBuffer::new(device.clone(), m * n * 4, vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
 
-        let layout = pipeline.layout().set_layouts().get(0).unwrap();
+        let layout = pipeline.layout().set_layouts().get(0)?;
         let set = PersistentDescriptorSet::new(
             backend.descriptor_set_allocator(),
             layout.clone(),
@@ -103,12 +79,6 @@ impl F32Ops {
             ],
             [],
         ).ok()?;
-
-        let push_constants = shaders::sgemm::PushConstants { 
-            M: m as u32,
-            N: n as u32,
-            K: k as u32,
-        };
 
         let mut builder = AutoCommandBufferBuilder::primary(
             backend.command_buffer_allocator(),
@@ -125,8 +95,6 @@ impl F32Ops {
                 0,
                 set,
             )
-            .unwrap()
-            .push_constants(pipeline.layout().clone(), 0, push_constants)
             .unwrap()
             .dispatch([n.div_ceil(32) as u32, m.div_ceil(32) as u32, 1])
             .unwrap();
@@ -147,7 +115,7 @@ impl F32Ops {
 
     pub fn matmul(
         &self,
-        backend: &VulkanBackend,
+        backend: &super::VulkanBackend,
         a: ArrayView2<f32>,
         b: ArrayView2<f32>,
         flop_threshold: usize,
@@ -181,7 +149,7 @@ impl F32Ops {
 
     pub fn matmul_transb(
         &self,
-        backend: &VulkanBackend,
+        backend: &super::VulkanBackend,
         a: ArrayView2<f32>,
         b: ArrayView2<f32>,
         flop_threshold: usize,

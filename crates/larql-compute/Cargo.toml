@@ -24,6 +24,7 @@ once_cell = "1.19"
 # Vulkan Backend
 vulkano = { version = "0.34", optional = true }
 vulkano-shaders = { version = "0.34", optional = true }
+bytemuck = { version = "1", features = ["derive"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 blas-src = { version = "0.10", features = ["openblas"], default-features = false }

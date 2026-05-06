@@ -1,8 +1,7 @@
 //! Q4_K matvec dispatch for Vulkan.
 
-use std::sync::Arc;
 use vulkano::descriptor_set::{PersistentDescriptorSet, WriteDescriptorSet};
-use vulkano::pipeline::{ComputePipeline, Pipeline, PipelineBindPoint, PipelineLayout, compute::ComputePipelineCreateInfo};
+use vulkano::pipeline::{Pipeline, PipelineBindPoint};
 use vulkano::command_buffer::{AutoCommandBufferBuilder, CommandBufferUsage, PrimaryCommandBufferAbstract};
 use vulkano::sync::{self, GpuFuture};
 
@@ -20,25 +19,15 @@ pub fn dispatch(
     let queue = backend.queue();
     
     let shader = shaders::q4k_matvec::load(device.clone()).ok()?;
-    let pipeline = ComputePipeline::new(
-        device.clone(),
-        None,
-        ComputePipelineCreateInfo::stage_layout(
-            shader.entry_point("main").unwrap(),
-            PipelineLayout::new(
-                device.clone(),
-                vulkano::pipeline::layout::PipelineLayoutCreateInfo::default(),
-            ).unwrap(),
-        ),
-    ).ok()?;
+    let pipeline = VulkanBackend::create_compute_pipeline(device, &shader);
 
     let mut out = vec![0.0f32; n as usize];
     
-    let w_buf = VulkanBuffer::from_slice_u8(device.clone(), w4k, vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
+    let w_buf = VulkanBuffer::from_slice(device.clone(), w4k, vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
     let x_buf = VulkanBuffer::from_slice(device.clone(), x, vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
     let out_buf = VulkanBuffer::new(device.clone(), out.len() * 4, vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
 
-    let layout = pipeline.layout().set_layouts().get(0).unwrap();
+    let layout = pipeline.layout().set_layouts().get(0)?;
     let set = PersistentDescriptorSet::new(
         backend.descriptor_set_allocator(),
         layout.clone(),
@@ -50,7 +39,7 @@ pub fn dispatch(
         [],
     ).ok()?;
 
-    let push_constants = shaders::q4k_matvec::PushConstants { n, k };
+    let push_constants = shaders::q4k_matvec::PushConstants { N: n, K: k };
 
     let mut builder = AutoCommandBufferBuilder::primary(
         backend.command_buffer_allocator(),

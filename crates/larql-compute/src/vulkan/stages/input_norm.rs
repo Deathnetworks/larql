@@ -44,7 +44,7 @@ pub fn encode_f32(
     let out_slice = out_buf.clone().slice(out_off .. out_off + hidden as u64);
 
     let set = PersistentDescriptorSet::new(
-        backend.descriptor_set_allocator.clone(),
+        &backend.descriptor_set_allocator,
         layout.clone(),
         [
             WriteDescriptorSet::buffer(0, h_slice.clone()),
@@ -56,7 +56,7 @@ pub fn encode_f32(
 
     let pcs = shaders::rms_norm::PushConstants {
         len: hidden_val,
-        eps,
+                eps,
         offset: norm_offset,
     };
 
@@ -113,7 +113,7 @@ pub fn encode_q8(
     let q8s_slice = q8s_out.clone().slice(q8s_out_off .. q8s_out_off + (hidden / 32) as u64);
 
     let q8_set = PersistentDescriptorSet::new(
-        backend.descriptor_set_allocator.clone(),
+        &backend.descriptor_set_allocator,
         q8_layout.clone(),
         [
             WriteDescriptorSet::buffer(0, scratch_f32.clone()),
@@ -124,7 +124,7 @@ pub fn encode_q8(
     ).unwrap();
 
     let q8_pcs = shaders::quantize_q8::PushConstants {
-        len: hidden_val,
+        K: hidden_val,
     };
 
     builder

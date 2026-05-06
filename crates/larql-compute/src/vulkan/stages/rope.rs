@@ -57,7 +57,7 @@ pub fn encode(
         let k_slice = k_buf.clone().slice(k_off .. k_off + k_pos_elements as u64);
 
         let set = PersistentDescriptorSet::new(
-            backend.descriptor_set_allocator.clone(),
+            &backend.descriptor_set_allocator,
             layout.clone(),
             [
                 WriteDescriptorSet::buffer(0, q_slice.clone()),

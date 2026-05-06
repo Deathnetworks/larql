@@ -1,5 +1,8 @@
 #version 450
 
+#extension GL_KHR_shader_subgroup_basic : enable
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+
 layout(local_size_x = 256) in;
 
 layout(set = 0, binding = 0) buffer Input { float input_data[]; };
@@ -21,7 +24,7 @@ const float tq4_boundaries[15] = float[15](
 );
 
 bool tq_sign_flip(uint i) {
-    return ((i * 2654435761u) >> 16) & 1u != 0;
+    return (((i * 2654435761u) >> 16) & 1u) != 0u;
 }
 
 void main() {

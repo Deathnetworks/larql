@@ -49,7 +49,7 @@ pub fn encode(
 
         // For scaling, 'A' is the input to scale, 'B' is unused, and 'Output' is overwritten.
         let set = PersistentDescriptorSet::new(
-            backend.descriptor_set_allocator.clone(),
+            &backend.descriptor_set_allocator,
             layout.clone(),
             [
                 WriteDescriptorSet::buffer(0, h_slice.clone()),

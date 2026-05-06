@@ -1,8 +1,7 @@
 //! RoPE dispatch for Vulkan.
 
-use std::sync::Arc;
 use vulkano::descriptor_set::{PersistentDescriptorSet, WriteDescriptorSet};
-use vulkano::pipeline::{ComputePipeline, Pipeline, PipelineBindPoint, PipelineLayout, compute::ComputePipelineCreateInfo};
+use vulkano::pipeline::{Pipeline, PipelineBindPoint};
 use vulkano::command_buffer::{AutoCommandBufferBuilder, CommandBufferUsage, PrimaryCommandBufferAbstract};
 use vulkano::sync::{self, GpuFuture};
 
@@ -24,17 +23,7 @@ pub fn dispatch(
     let queue = backend.queue();
     
     let shader = shaders::rope::load(device.clone()).ok()?;
-    let pipeline = ComputePipeline::new(
-        device.clone(),
-        None,
-        ComputePipelineCreateInfo::stage_layout(
-            shader.entry_point("main").unwrap(),
-            PipelineLayout::new(
-                device.clone(),
-                vulkano::pipeline::layout::PipelineLayoutCreateInfo::default(),
-            ).unwrap(),
-        ),
-    ).ok()?;
+    let pipeline = VulkanBackend::create_compute_pipeline(device, &shader);
 
     let total_heads = num_q + num_kv;
     let rdim = if rotary_dim == 0 { head_dim } else { rotary_dim.min(head_dim) };
@@ -43,7 +32,7 @@ pub fn dispatch(
     let q_buf = VulkanBuffer::from_slice(device.clone(), q, vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
     let k_buf = VulkanBuffer::from_slice(device.clone(), k, vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
 
-    let layout = pipeline.layout().set_layouts().get(0).unwrap();
+    let layout = pipeline.layout().set_layouts().get(0)?;
     let set = PersistentDescriptorSet::new(
         backend.descriptor_set_allocator(),
         layout.clone(),
@@ -61,6 +50,7 @@ pub fn dispatch(
         rotary_dim: rdim,
         num_q,
         num_kv,
+        mode: 0,
     };
 
     let mut builder = AutoCommandBufferBuilder::primary(

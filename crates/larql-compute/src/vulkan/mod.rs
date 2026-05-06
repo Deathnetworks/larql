@@ -9,8 +9,9 @@ use once_cell::sync::Lazy;
 
 use vulkano::descriptor_set::allocator::StandardDescriptorSetAllocator;
 use vulkano::command_buffer::allocator::StandardCommandBufferAllocator;
-use vulkano::pipeline::{ComputePipeline, layout::PipelineLayout, ComputePipelineCreateInfo, layout::PipelineLayoutCreateInfo, ComputeShaderStageCreateInfo};
-use vulkano::shader::EntryPoint;
+use vulkano::pipeline::compute::ComputePipelineCreateInfo;
+use vulkano::pipeline::layout::PipelineDescriptorSetLayoutCreateInfo;
+use vulkano::pipeline::{ComputePipeline, PipelineLayout, PipelineShaderStageCreateInfo};
 
 pub mod buffers;
 pub mod calibrate;
@@ -29,7 +30,6 @@ pub mod stages;
 mod trait_impl;
 
 use f32_ops::F32Ops;
-use buffers::BufferCache;
 use ops::q4_common::Q4Pipelines;
 
 /// Vulkan compute backend.
@@ -38,7 +38,6 @@ pub struct VulkanBackend {
     queue: Arc<Queue>,
     descriptor_set_allocator: Arc<StandardDescriptorSetAllocator>,
     command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
-    pub bufs: BufferCache,
     pub f32_ops: F32Ops,
     pub q4: Q4Pipelines,
     // Shaders
@@ -72,7 +71,7 @@ pub struct VulkanBackend {
     
     flop_threshold: std::sync::atomic::AtomicUsize,
     kv_cache: std::sync::Mutex<Option<ops::kv_cache::KVCache>>,
-    moe_scratch: std::sync::Mutex<Option<moe_dispatch::MoeScratch>>,
+    moe_scratch: std::sync::Mutex<Option<()>>,
 }
 
 static VULKAN_STATE: Lazy<Option<(Arc<Device>, Arc<Queue>)>> = Lazy::new(|| {
@@ -126,73 +125,43 @@ impl VulkanBackend {
     /// Create a new Vulkan backend.
     pub fn new() -> Option<Self> {
         VULKAN_STATE.as_ref().map(|(device, queue)| {
-            let f32_ops = F32Ops::new_internal(device, queue).expect("Failed to initialize F32Ops");
-            let bufs = BufferCache::new(device.clone());
+            let f32_ops = F32Ops::new(device, queue).expect("Failed to initialize F32Ops");
             let q4 = Q4Pipelines { /* stubs */ };
 
             // Initialize all pipelines
-            let rms_norm_shader = shaders::rms_norm::load(device.clone()).expect("Failed to load rms_norm shader");
-            let silu_shader = shaders::silu::load(device.clone()).expect("Failed to load silu shader");
-            let rope_shader = shaders::rope::load(device.clone()).expect("Failed to load rope shader");
-            let q4_vecmat_shader = shaders::q4_vecmat::load(device.clone()).expect("Failed to load q4_vecmat shader");
-            let f32_gemv_shader = shaders::f32_gemv::load(device.clone()).expect("Failed to load f32_gemv shader");
-            let q4k_matvec_shader = shaders::q4k_matvec::load(device.clone()).expect("Failed to load q4k_matvec shader");
-            let q4k_ffn_gate_up_shader = shaders::q4k_ffn_gate_up::load(device.clone()).expect("Failed to load q4k_ffn_gate_up shader");
-            let attn_fused_shader = shaders::attn_fused::load(device.clone()).expect("Failed to load attn_fused shader");
-            let q4k_qkv_proj_shader = shaders::q4k_qkv_proj::load(device.clone()).expect("Failed to load q4k_qkv_proj shader");
-            let q4k_q6k_qkv_proj_shader = shaders::q4k_q6k_qkv_proj::load(device.clone()).expect("Failed to load q4k_q6k_qkv_proj shader");
-            let q6k_matvec_shader = shaders::q6k_matvec::load(device.clone()).expect("Failed to load q6k_matvec shader");
-            let quantize_q8_shader = shaders::quantize_q8::load(device.clone()).expect("Failed to load quantize_q8 shader");
-            let layer_norm_shader = shaders::layer_norm::load(device.clone()).expect("Failed to load layer_norm shader");
-            let residual_ops_shader = shaders::residual_ops::load(device.clone()).expect("Failed to load residual_ops shader");
-            let graph_walk_knn_shader = shaders::graph_walk_knn::load(device.clone()).expect("Failed to load graph_walk_knn shader");
-            let v_norm_shader = shaders::v_norm::load(device.clone()).expect("Failed to load v_norm shader");
-            let qk_norm_shader = shaders::qk_norm::load(device.clone()).expect("Failed to load qk_norm shader");
-            let qk_norm_rope_fused_shader = shaders::qk_norm_rope_fused::load(device.clone()).expect("Failed to load qk_norm_rope_fused shader");
-            let post_attn_residual_norm_store_shader = shaders::post_attn_residual_norm_store::load(device.clone()).expect("Failed to load post_attn_residual_norm_store shader");
-            let post_ffn_norm_residual_add_shader = shaders::post_ffn_norm_residual_add::load(device.clone()).expect("Failed to load post_ffn_norm_residual_add shader");
-            let turboquant_encode_shader = shaders::turboquant_encode::load(device.clone()).expect("Failed to load turboquant_encode shader");
-            let turboquant_decode_shader = shaders::turboquant_decode::load(device.clone()).expect("Failed to load turboquant_decode shader");
-            let sgemm_shader = shaders::sgemm::load(device.clone()).expect("Failed to load sgemm shader");
-            let sgemm_transb_shader = shaders::sgemm_transb::load(device.clone()).expect("Failed to load sgemm_transb shader");
-            let q4_sparse_matvec_shader = shaders::q4_sparse_matvec::load(device.clone()).expect("Failed to load q4_sparse_matvec shader");
-            let q4k_matvec_stride32_shader = shaders::q4k_matvec_stride32::load(device.clone()).expect("Failed to load q4k_matvec_stride32 shader");
-            let q8_matvec_shader = shaders::q8_matvec::load(device.clone()).expect("Failed to load q8_matvec shader");
-
-            let rms_norm_pipeline = Self::create_compute_pipeline(device, rms_norm_shader.entry_point("main").unwrap());
-            let silu_pipeline = Self::create_compute_pipeline(device, silu_shader.entry_point("main").unwrap());
-            let rope_pipeline = Self::create_compute_pipeline(device, rope_shader.entry_point("main").unwrap());
-            let q4_vecmat_pipeline = Self::create_compute_pipeline(device, q4_vecmat_shader.entry_point("main").unwrap());
-            let f32_gemv_pipeline = Self::create_compute_pipeline(device, f32_gemv_shader.entry_point("main").unwrap());
-            let q4k_matvec_pipeline = Self::create_compute_pipeline(device, q4k_matvec_shader.entry_point("main").unwrap());
-            let q4k_ffn_gate_up_pipeline = Self::create_compute_pipeline(device, q4k_ffn_gate_up_shader.entry_point("main").unwrap());
-            let attn_fused_pipeline = Self::create_compute_pipeline(device, attn_fused_shader.entry_point("main").unwrap());
-            let q4k_qkv_proj_pipeline = Self::create_compute_pipeline(device, q4k_qkv_proj_shader.entry_point("main").unwrap());
-            let q4k_q6k_qkv_proj_pipeline = Self::create_compute_pipeline(device, q4k_q6k_qkv_proj_shader.entry_point("main").unwrap());
-            let q6k_matvec_pipeline = Self::create_compute_pipeline(device, q6k_matvec_shader.entry_point("main").unwrap());
-            let quantize_q8_pipeline = Self::create_compute_pipeline(device, quantize_q8_shader.entry_point("main").unwrap());
-            let layer_norm_pipeline = Self::create_compute_pipeline(device, layer_norm_shader.entry_point("main").unwrap());
-            let residual_ops_pipeline = Self::create_compute_pipeline(device, residual_ops_shader.entry_point("main").unwrap());
-            let graph_walk_knn_pipeline = Self::create_compute_pipeline(device, graph_walk_knn_shader.entry_point("main").unwrap());
-            let v_norm_pipeline = Self::create_compute_pipeline(device, v_norm_shader.entry_point("main").unwrap());
-            let qk_norm_pipeline = Self::create_compute_pipeline(device, qk_norm_shader.entry_point("main").unwrap());
-            let qk_norm_rope_fused_pipeline = Self::create_compute_pipeline(device, qk_norm_rope_fused_shader.entry_point("main").unwrap());
-            let post_attn_residual_norm_store_pipeline = Self::create_compute_pipeline(device, post_attn_residual_norm_store_shader.entry_point("main").unwrap());
-            let post_ffn_norm_residual_add_pipeline = Self::create_compute_pipeline(device, post_ffn_norm_residual_add_shader.entry_point("main").unwrap());
-            let turboquant_encode_pipeline = Self::create_compute_pipeline(device, turboquant_encode_shader.entry_point("main").unwrap());
-            let turboquant_decode_pipeline = Self::create_compute_pipeline(device, turboquant_decode_shader.entry_point("main").unwrap());
-            let sgemm_pipeline = Self::create_compute_pipeline(device, sgemm_shader.entry_point("main").unwrap());
-            let sgemm_transb_pipeline = Self::create_compute_pipeline(device, sgemm_transb_shader.entry_point("main").unwrap());
-            let q4_sparse_matvec_pipeline = Self::create_compute_pipeline(device, q4_sparse_matvec_shader.entry_point("main").unwrap());
-            let q4k_matvec_stride32_pipeline = Self::create_compute_pipeline(device, q4k_matvec_stride32_shader.entry_point("main").unwrap());
-            let q8_matvec_pipeline = Self::create_compute_pipeline(device, q8_matvec_shader.entry_point("main").unwrap());
+            let rms_norm_pipeline = Self::create_compute_pipeline(device, &shaders::rms_norm::load(device.clone()).expect("rms_norm shader"));
+            let silu_pipeline = Self::create_compute_pipeline(device, &shaders::silu::load(device.clone()).expect("silu shader"));
+            let rope_pipeline = Self::create_compute_pipeline(device, &shaders::rope::load(device.clone()).expect("rope shader"));
+            let q4_vecmat_pipeline = Self::create_compute_pipeline(device, &shaders::q4_vecmat::load(device.clone()).expect("q4_vecmat shader"));
+            let f32_gemv_pipeline = Self::create_compute_pipeline(device, &shaders::f32_gemv::load(device.clone()).expect("f32_gemv shader"));
+            let q4k_matvec_pipeline = Self::create_compute_pipeline(device, &shaders::q4k_matvec::load(device.clone()).expect("q4k_matvec shader"));
+            let q4k_ffn_gate_up_pipeline = Self::create_compute_pipeline(device, &shaders::q4k_ffn_gate_up::load(device.clone()).expect("q4k_ffn_gate_up shader"));
+            let attn_fused_pipeline = Self::create_compute_pipeline(device, &shaders::attn_fused::load(device.clone()).expect("attn_fused shader"));
+            let q4k_qkv_proj_pipeline = Self::create_compute_pipeline(device, &shaders::q4k_qkv_proj::load(device.clone()).expect("q4k_qkv_proj shader"));
+            let q4k_q6k_qkv_proj_pipeline = Self::create_compute_pipeline(device, &shaders::q4k_q6k_qkv_proj::load(device.clone()).expect("q4k_q6k_qkv_proj shader"));
+            let q6k_matvec_pipeline = Self::create_compute_pipeline(device, &shaders::q6k_matvec::load(device.clone()).expect("q6k_matvec shader"));
+            let quantize_q8_pipeline = Self::create_compute_pipeline(device, &shaders::quantize_q8::load(device.clone()).expect("quantize_q8 shader"));
+            let layer_norm_pipeline = Self::create_compute_pipeline(device, &shaders::layer_norm::load(device.clone()).expect("layer_norm shader"));
+            let residual_ops_pipeline = Self::create_compute_pipeline(device, &shaders::residual_ops::load(device.clone()).expect("residual_ops shader"));
+            let graph_walk_knn_pipeline = Self::create_compute_pipeline(device, &shaders::graph_walk_knn::load(device.clone()).expect("graph_walk_knn shader"));
+            let v_norm_pipeline = Self::create_compute_pipeline(device, &shaders::v_norm::load(device.clone()).expect("v_norm shader"));
+            let qk_norm_pipeline = Self::create_compute_pipeline(device, &shaders::qk_norm::load(device.clone()).expect("qk_norm shader"));
+            let qk_norm_rope_fused_pipeline = Self::create_compute_pipeline(device, &shaders::qk_norm_rope_fused::load(device.clone()).expect("qk_norm_rope_fused shader"));
+            let post_attn_residual_norm_store_pipeline = Self::create_compute_pipeline(device, &shaders::post_attn_residual_norm_store::load(device.clone()).expect("post_attn_residual_norm_store shader"));
+            let post_ffn_norm_residual_add_pipeline = Self::create_compute_pipeline(device, &shaders::post_ffn_norm_residual_add::load(device.clone()).expect("post_ffn_norm_residual_add shader"));
+            let turboquant_encode_pipeline = Self::create_compute_pipeline(device, &shaders::turboquant_encode::load(device.clone()).expect("turboquant_encode shader"));
+            let turboquant_decode_pipeline = Self::create_compute_pipeline(device, &shaders::turboquant_decode::load(device.clone()).expect("turboquant_decode shader"));
+            let sgemm_pipeline = Self::create_compute_pipeline(device, &shaders::sgemm::load(device.clone()).expect("sgemm shader"));
+            let sgemm_transb_pipeline = Self::create_compute_pipeline(device, &shaders::sgemm_transb::load(device.clone()).expect("sgemm_transb shader"));
+            let q4_sparse_matvec_pipeline = Self::create_compute_pipeline(device, &shaders::q4_sparse_matvec::load(device.clone()).expect("q4_sparse_matvec shader"));
+            let q4k_matvec_stride32_pipeline = Self::create_compute_pipeline(device, &shaders::q4k_matvec_stride32::load(device.clone()).expect("q4k_matvec_stride32 shader"));
+            let q8_matvec_pipeline = Self::create_compute_pipeline(device, &shaders::q8_matvec::load(device.clone()).expect("q8_matvec shader"));
 
             Self {
                 device: Arc::clone(device),
                 queue: Arc::clone(queue),
                 descriptor_set_allocator: Arc::new(StandardDescriptorSetAllocator::new(device.clone(), Default::default())),
                 command_buffer_allocator: Arc::new(StandardCommandBufferAllocator::new(device.clone(), Default::default())),
-                bufs,
                 f32_ops,
                 q4,
                 rms_norm_pipeline,
@@ -229,11 +198,15 @@ impl VulkanBackend {
         })
     }
 
-    fn create_compute_pipeline(device: &Arc<Device>, entry_point: EntryPoint) -> Arc<ComputePipeline> {
-        let stage = ComputeShaderStageCreateInfo::new(entry_point);
+    /// Create a compute pipeline from a loaded shader module using vulkano 0.34 API.
+    fn create_compute_pipeline(device: &Arc<Device>, shader_module: &Arc<vulkano::shader::ShaderModule>) -> Arc<ComputePipeline> {
+        let entry_point = shader_module.entry_point("main").expect("Shader missing 'main' entry point");
+        let stage = PipelineShaderStageCreateInfo::new(entry_point);
         let layout = PipelineLayout::new(
             device.clone(),
-            PipelineLayoutCreateInfo::from_stages(&[stage.clone()]).expect("Failed to create pipeline layout"),
+            PipelineDescriptorSetLayoutCreateInfo::from_stages([&stage])
+                .into_pipeline_layout_create_info(device.clone())
+                .expect("Failed to create pipeline layout info"),
         ).expect("Failed to create pipeline layout");
 
         ComputePipeline::new(
@@ -241,6 +214,24 @@ impl VulkanBackend {
             None,
             ComputePipelineCreateInfo::stage_layout(stage, layout),
         ).expect("Failed to create compute pipeline")
+    }
+
+    // ── Accessor methods (used by all ops/* and stages/* files) ──
+
+    pub fn device(&self) -> &Arc<Device> {
+        &self.device
+    }
+
+    pub fn queue(&self) -> &Arc<Queue> {
+        &self.queue
+    }
+
+    pub fn descriptor_set_allocator(&self) -> &Arc<StandardDescriptorSetAllocator> {
+        &self.descriptor_set_allocator
+    }
+
+    pub fn command_buffer_allocator(&self) -> &Arc<StandardCommandBufferAllocator> {
+        &self.command_buffer_allocator
     }
 
     pub fn calibrate(&self) {

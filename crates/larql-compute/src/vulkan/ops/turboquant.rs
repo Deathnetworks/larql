@@ -1,8 +1,7 @@
 //! TurboQuant dispatch for Vulkan.
 
-use std::sync::Arc;
 use vulkano::descriptor_set::{PersistentDescriptorSet, WriteDescriptorSet};
-use vulkano::pipeline::{ComputePipeline, Pipeline, PipelineBindPoint, PipelineLayout, compute::ComputePipelineCreateInfo};
+use vulkano::pipeline::{Pipeline, PipelineBindPoint};
 use vulkano::command_buffer::{AutoCommandBufferBuilder, CommandBufferUsage, PrimaryCommandBufferAbstract};
 use vulkano::sync::{self, GpuFuture};
 
@@ -19,17 +18,7 @@ pub fn encode_dispatch(
     let queue = backend.queue();
     
     let shader = shaders::turboquant_encode::load(device.clone()).ok()?;
-    let pipeline = ComputePipeline::new(
-        device.clone(),
-        None,
-        ComputePipelineCreateInfo::stage_layout(
-            shader.entry_point("main").unwrap(),
-            PipelineLayout::new(
-                device.clone(),
-                vulkano::pipeline::layout::PipelineLayoutCreateInfo::default(),
-            ).unwrap(),
-        ),
-    ).ok()?;
+    let pipeline = VulkanBackend::create_compute_pipeline(device, &shader);
 
     let mut norms = vec![0.0f32; batch as usize];
     let mut packed = vec![0u8; (batch * d / 2) as usize];
@@ -38,7 +27,7 @@ pub fn encode_dispatch(
     let norms_buf = VulkanBuffer::new(device.clone(), norms.len() * 4, vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
     let packed_buf = VulkanBuffer::new(device.clone(), packed.len(), vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
 
-    let layout = pipeline.layout().set_layouts().get(0).unwrap();
+    let layout = pipeline.layout().set_layouts().get(0)?;
     let set = PersistentDescriptorSet::new(
         backend.descriptor_set_allocator(),
         layout.clone(),
@@ -83,7 +72,7 @@ pub fn encode_dispatch(
         .ok()?;
 
     norms_buf.copy_to_slice(&mut norms);
-    packed_buf.copy_to_slice_u8(&mut packed);
+    packed_buf.copy_to_slice(&mut packed);
     Some((norms, packed))
 }
 
@@ -98,25 +87,15 @@ pub fn decode_dispatch(
     let queue = backend.queue();
     
     let shader = shaders::turboquant_decode::load(device.clone()).ok()?;
-    let pipeline = ComputePipeline::new(
-        device.clone(),
-        None,
-        ComputePipelineCreateInfo::stage_layout(
-            shader.entry_point("main").unwrap(),
-            PipelineLayout::new(
-                device.clone(),
-                vulkano::pipeline::layout::PipelineLayoutCreateInfo::default(),
-            ).unwrap(),
-        ),
-    ).ok()?;
+    let pipeline = VulkanBackend::create_compute_pipeline(device, &shader);
 
     let mut output = vec![0.0f32; (batch * d) as usize];
     
     let norms_buf = VulkanBuffer::from_slice(device.clone(), norms, vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
-    let packed_buf = VulkanBuffer::from_slice_u8(device.clone(), packed, vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
+    let packed_buf = VulkanBuffer::from_slice(device.clone(), packed, vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
     let output_buf = VulkanBuffer::new(device.clone(), output.len() * 4, vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
 
-    let layout = pipeline.layout().set_layouts().get(0).unwrap();
+    let layout = pipeline.layout().set_layouts().get(0)?;
     let set = PersistentDescriptorSet::new(
         backend.descriptor_set_allocator(),
         layout.clone(),

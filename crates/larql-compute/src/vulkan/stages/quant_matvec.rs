@@ -35,7 +35,7 @@ fn dispatch_vulkan(
     let layout = pipeline.layout().set_layouts().get(0).unwrap();
 
     let set = PersistentDescriptorSet::new(
-        backend.descriptor_set_allocator.clone(),
+        &backend.descriptor_set_allocator,
         layout.clone(),
         [
             WriteDescriptorSet::buffer(0, w_buf.clone()),
@@ -84,7 +84,7 @@ fn dispatch_q8_input(
     let layout = pipeline.layout().set_layouts().get(0).unwrap();
 
     let set = PersistentDescriptorSet::new(
-        backend.descriptor_set_allocator.clone(),
+        &backend.descriptor_set_allocator,
         layout.clone(),
         [
             WriteDescriptorSet::buffer(0, w_buf.clone()),

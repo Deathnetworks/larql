@@ -48,7 +48,7 @@ pub fn encode(
     // For QWeight and KWeight, we bind q_buf and k_buf respectively as dummies since the caller
     // expects to supply them separately if needed, or the shader currently ignores use_qk_norm flag.
     let set = PersistentDescriptorSet::new(
-        backend.descriptor_set_allocator.clone(),
+        &backend.descriptor_set_allocator,
         layout.clone(),
         [
             WriteDescriptorSet::buffer(0, q_buf.clone()),

@@ -1,5 +1,8 @@
 #version 450
 #extension GL_KHR_shader_subgroup_arithmetic : enable
+#extension GL_KHR_shader_subgroup_basic : enable
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+
 
 layout(local_size_x = 128) in;
 
@@ -63,7 +66,7 @@ void main() {
             float h = X[i];
             partial += h * h;
         }
-        float sg_sum = subgroupSum(partial);
+        float sg_sum = subgroupAdd(partial);
         if (lane == 0) tg_p[sg_id] = sg_sum;
         barrier();
         float sum_sq = tg_p[0] + tg_p[1] + tg_p[2] + tg_p[3];
@@ -127,7 +130,7 @@ void main() {
             }
             acc += scale * dot_acc - mmin * sum_acc;
         }
-        acc = subgroupSum(acc);
+        acc = subgroupAdd(acc);
         if (lane == 0) {
             if (buffer_id == 0) Q_out[local_row] = acc;
             else K_out[local_row] = acc;
@@ -168,7 +171,7 @@ void main() {
                 );
             }
         }
-        acc = subgroupSum(acc);
+        acc = subgroupAdd(acc);
         if (lane == 0) V_out[local_row] = acc;
     }
 }

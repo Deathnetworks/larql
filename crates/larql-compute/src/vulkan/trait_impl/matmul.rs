@@ -3,7 +3,6 @@
 use ndarray::{Array2, ArrayView2};
 use crate::backend::MatMul;
 use crate::vulkan::VulkanBackend;
-use crate::vulkan::ops::f32_gemv;
 
 impl MatMul for VulkanBackend {
     fn matmul(&self, a: ArrayView2<f32>, b: ArrayView2<f32>) -> Array2<f32> {
@@ -19,7 +18,6 @@ impl MatMul for VulkanBackend {
         if x.len() != k {
             return None;
         }
-
-        f32_gemv::dispatch(self, w.as_slice()?, x, n as u32, k as u32)
+        crate::vulkan::ops::f32_gemv::dispatch(self, w.as_slice()?, x, n as u32, k as u32)
     }
 }

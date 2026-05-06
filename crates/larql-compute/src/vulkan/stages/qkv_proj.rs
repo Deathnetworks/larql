@@ -79,7 +79,7 @@ pub fn encode_fused_f32(
     let v_slice = v_out.clone().slice(v_off .. v_off + kv_rows as u64);
 
     let set = PersistentDescriptorSet::new(
-        backend.descriptor_set_allocator.clone(),
+        &backend.descriptor_set_allocator,
         layout.clone(),
         [
             WriteDescriptorSet::buffer(0, wq_buf.clone()),

@@ -1,5 +1,10 @@
 #version 450
 #extension GL_KHR_shader_subgroup_arithmetic : enable
+#extension GL_EXT_shader_atomic_float : enable
+
+#extension GL_KHR_shader_subgroup_basic : enable
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+
 
 layout(local_size_x = 256) in;
 
@@ -29,7 +34,7 @@ void main() {
         float v = O[i];
         p_o += v * v;
     }
-    float s_o = subgroupSum(p_o);
+    float s_o = subgroupAdd(p_o);
     if (lane == 0) {
         if (sg_id == 0) tg_red = 0.0;
     }
@@ -53,7 +58,7 @@ void main() {
         float v = FFN_norm[i];
         p_h += v * v;
     }
-    float s_h = subgroupSum(p_h);
+    float s_h = subgroupAdd(p_h);
     if (lane == 0) {
         if (sg_id == 0) tg_red = 0.0;
     }

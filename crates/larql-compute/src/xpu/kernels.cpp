@@ -1218,9 +1218,7 @@ struct TurboQuantDecodeFunctor {
     }
 };
 
-        }
-    }
-};
+
 
 struct SgemmFunctor {
     const float* a;
