@@ -1,8 +1,19 @@
+//! Vulkan buffer management.
+//!
+//! Provides a safe Rust wrapper around Vulkan buffers using `vulkano`.
+//! Manages memory allocation, staging, and synchronization for compute shaders.
+//!
+//! All buffers are allocated via a `StandardMemoryAllocator` with
+//! `PREFER_DEVICE` flags to ensure high bandwidth for GPU kernels.
+
 use vulkano::buffer::{Buffer, BufferCreateInfo, BufferUsage};
 use vulkano::memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator};
 use vulkano::device::Device;
 use std::sync::Arc;
 
+/// A Vulkan GPU buffer.
+///
+/// Encapsulates a `vulkano::buffer::Buffer` and its associated memory.
 pub struct VulkanBuffer {
     inner: Arc<Buffer>,
 }

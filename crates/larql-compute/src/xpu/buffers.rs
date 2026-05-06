@@ -1,6 +1,20 @@
-use std::ptr;
+//! XPU (SYCL) USM (Unified Shared Memory) buffer management.
+//!
+//! Provides a safe Rust wrapper around SYCL memory allocations. 
+//! Supports both `Device` memory (GPU-only, high bandwidth) and 
+//! `Shared` memory (migratable between CPU/GPU).
+//!
+//! USM allows zero-copy pointers to be shared between the Rust FFI
+//! boundary and the SYCL kernels in the Bridge-to-DLL.
+
+use std::collections::HashMap;
+use std::sync::Mutex;
 use super::ffi::ffi as xpu_ffi;
 
+/// Cache key: (pointer address, byte length) of the source data.
+type CacheKey = (usize, usize);
+
+/// A SYCL USM buffer.
 pub enum XpuBuffer {
     Device {
         ptr: *mut u8,
@@ -89,6 +103,87 @@ impl Drop for XpuBuffer {
     fn drop(&mut self) {
         unsafe {
             xpu_ffi::free_memory(self.as_mut_ptr());
+        }
+    }
+}
+
+/// Buffer cache for XPU USM buffers.
+pub struct BufferCache {
+    cache: Mutex<HashMap<CacheKey, std::sync::Arc<XpuBuffer>>>,
+    scratch_pool: Mutex<HashMap<usize, Vec<XpuBuffer>>>,
+}
+
+impl BufferCache {
+    pub fn new() -> Self {
+        Self {
+            cache: Mutex::new(HashMap::new()),
+            scratch_pool: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub fn get_f32(&self, data: &[f32]) -> std::sync::Arc<XpuBuffer> {
+        let key: CacheKey = (data.as_ptr() as usize, data.len());
+        let mut cache = self.cache.lock().unwrap();
+        if let Some(buf) = cache.get(&key) {
+            return buf.clone();
+        }
+
+        let buf = XpuBuffer::from_slice(data, false);
+        let arc = std::sync::Arc::new(buf);
+        cache.insert(key, arc.clone());
+        arc
+    }
+
+    pub fn get_bytes(&self, data: &[u8]) -> std::sync::Arc<XpuBuffer> {
+        let key: CacheKey = (data.as_ptr() as usize, data.len());
+        let mut cache = self.cache.lock().unwrap();
+        if let Some(buf) = cache.get(&key) {
+            return buf.clone();
+        }
+
+        let buf = XpuBuffer::from_slice(data, false);
+        let arc = std::sync::Arc::new(buf);
+        cache.insert(key, arc.clone());
+        arc
+    }
+
+    pub fn output(&self, bytes: usize) -> XpuBuffer {
+        let mut pool = self.scratch_pool.lock().unwrap();
+        if let Some(buf) = pool.entry(bytes).or_default().pop() {
+            return buf;
+        }
+        XpuBuffer::new_device(bytes)
+    }
+
+    pub fn recycle(&self, buf: XpuBuffer) {
+        let bytes = buf.size();
+        self.scratch_pool.lock().unwrap().entry(bytes).or_default().push(buf);
+    }
+}
+
+pub struct ScratchGuard<'a> {
+    bufs: Vec<XpuBuffer>,
+    cache: &'a BufferCache,
+}
+
+impl<'a> ScratchGuard<'a> {
+    pub fn new(cache: &'a BufferCache) -> Self {
+        Self {
+            bufs: Vec::new(),
+            cache,
+        }
+    }
+
+    pub fn track(&mut self, buf: XpuBuffer) -> &XpuBuffer {
+        self.bufs.push(buf);
+        self.bufs.last().unwrap()
+    }
+}
+
+impl Drop for ScratchGuard<'_> {
+    fn drop(&mut self) {
+        for buf in self.bufs.drain(..) {
+            self.cache.recycle(buf);
         }
     }
 }

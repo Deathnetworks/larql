@@ -1,7 +1,19 @@
+#ifndef SYCL_DLL_BUILD
 #include "kernels.hpp"
+#else
+#include <sycl/sycl.hpp>
+#include <memory>
+#include <iostream>
+#ifdef _WIN32
+#define EXPORT __declspec(dllexport)
+#else
+#define EXPORT
+#endif
+#endif
+
 #include <iostream>
 
-#if defined(_MSC_VER)
+#if defined(_MSC_VER) && !defined(SYCL_DLL_BUILD)
 #pragma runtime_checks("", off)
 #pragma strict_gs_check(off)
 #endif
@@ -19,12 +31,14 @@ bool init_xpu() {
     }
 }
 
+#ifndef SYCL_DLL_BUILD
 rust::String get_device_info() {
     if (!init_xpu()) return rust::String("No XPU Device");
     auto device = g_queue->get_device();
     std::string name = device.get_info<sycl::info::device::name>();
     return rust::String(name);
 }
+#endif
 
 uint8_t* allocate_device(size_t size) {
     if (!init_xpu()) return nullptr;
@@ -56,6 +70,8 @@ static inline float decode_f16(uint16_t bits) {
     return (float)h;
 }
 
+// Functor Definitions
+
 struct F32GemvFunctor {
     const float* x;
     const float* a;
@@ -71,11 +87,6 @@ struct F32GemvFunctor {
         y[row] = sum;
     }
 };
-
-void f32_gemv(const float* x, const float* a, float* y, size_t m, size_t k) {
-    if (!init_xpu()) return;
-    g_queue->parallel_for(sycl::range<1>(m), F32GemvFunctor{x, a, y, (uint32_t)k}).wait();
-}
 
 struct Q4MatVecV4Functor {
     const uint8_t* q4;
@@ -105,11 +116,6 @@ struct Q4MatVecV4Functor {
     }
 };
 
-void q4_matvec_v4(const uint8_t* q4, const float* x, float* out, size_t n, size_t k) {
-    if (!init_xpu()) return;
-    g_queue->parallel_for(sycl::range<1>(n), Q4MatVecV4Functor{q4, x, out, (uint32_t)n, (uint32_t)k}).wait();
-}
-
 struct Q4VecMatFunctor {
     const uint8_t* q4;
     const float* x;
@@ -137,11 +143,6 @@ struct Q4VecMatFunctor {
         out[tid] = acc;
     }
 };
-
-void q4_vecmat(const uint8_t* q4, const float* x, float* out, size_t m, size_t k) {
-    if (!init_xpu()) return;
-    g_queue->parallel_for(sycl::range<1>(k), Q4VecMatFunctor{q4, x, out, (uint32_t)m, (uint32_t)k}).wait();
-}
 
 struct Q4kMatVec8sgFunctor {
     const uint8_t* w4k;
@@ -212,13 +213,6 @@ struct Q4kMatVec8sgFunctor {
         if (lane == 0) out[row_idx] = acc;
     }
 };
-
-void q4k_matvec_8sg(const uint8_t* w4k, const float* x, float* out, size_t n, size_t k) {
-    if (!init_xpu()) return;
-    const uint32_t THREADS_PER_TG = 256;
-    g_queue->parallel_for(sycl::nd_range<1>(sycl::range<1>((n / 8) * THREADS_PER_TG), sycl::range<1>(THREADS_PER_TG)), 
-        Q4kMatVec8sgFunctor{w4k, x, out, (uint32_t)n, (uint32_t)k}).wait();
-}
 
 struct Q6kMatVecFunctor {
     const uint8_t* w6k;
@@ -305,13 +299,6 @@ struct Q6kMatVecFunctor {
     }
 };
 
-void q6k_matvec(const uint8_t* w6k, const float* x, float* out, size_t n, size_t k) {
-    if (!init_xpu()) return;
-    const uint32_t THREADS_PER_TG = 128;
-    g_queue->parallel_for(sycl::nd_range<1>(sycl::range<1>((n / 4) * THREADS_PER_TG), sycl::range<1>(THREADS_PER_TG)), 
-        Q6kMatVecFunctor{w6k, x, out, (uint32_t)n, (uint32_t)k}).wait();
-}
-
 struct Q4kFfnGateUpFunctor {
     const uint8_t* wg;
     const uint8_t* wu;
@@ -392,24 +379,6 @@ struct Q4kFfnGateUpFunctor {
     }
 };
 
-void q4k_ffn_gate_up(
-    const uint8_t* wg,
-    const uint8_t* wu,
-    const float* x,
-    float* g_out,
-    float* u_out,
-    size_t n,
-    size_t k
-) {
-    if (!init_xpu()) return;
-    const uint32_t ROWS_PER_TG = 4;
-    const uint32_t THREADS_PER_TG = 128;
-    uint32_t tgs_per_mat = (uint32_t)((n + ROWS_PER_TG - 1) / ROWS_PER_TG);
-
-    g_queue->parallel_for(sycl::nd_range<1>(sycl::range<1>(2 * tgs_per_mat * THREADS_PER_TG), sycl::range<1>(THREADS_PER_TG)), 
-        Q4kFfnGateUpFunctor{wg, wu, x, g_out, u_out, (uint32_t)n, (uint32_t)k, tgs_per_mat}).wait();
-}
-
 struct SiluFunctor {
     const float* input;
     float* out;
@@ -420,15 +389,6 @@ struct SiluFunctor {
         out[i] = x / (1.0f + sycl::exp(-x));
     }
 };
-
-void silu(
-    const float* input,
-    float* out,
-    size_t n
-) {
-    if (!init_xpu()) return;
-    g_queue->parallel_for(sycl::range<1>(n), SiluFunctor{input, out}).wait();
-}
 
 struct RmsNormFunctor {
     const float* x;
@@ -456,19 +416,6 @@ struct RmsNormFunctor {
         }
     }
 };
-
-void rms_norm(
-    const float* x,
-    const float* weight,
-    float* out,
-    size_t len,
-    float eps,
-    float offset
-) {
-    if (!init_xpu()) return;
-    size_t wg_size = 256; 
-    g_queue->parallel_for(sycl::nd_range<1>(sycl::range<1>(wg_size), sycl::range<1>(wg_size)), RmsNormFunctor{x, weight, out, len, eps, offset}).wait();
-}
 
 struct AttnFusedFunctor {
     const float* q_in;
@@ -645,62 +592,6 @@ struct AttnFusedFunctor {
     }
 };
 
-void attn_fused(
-    const float* q_in,
-    const float* k_in,
-    const float* v_in,
-    float* k_cache,
-    float* v_cache,
-    float* out,
-    const float* q_weight,
-    const float* k_weight,
-    uint32_t t,
-    uint32_t head_dim,
-    uint32_t num_q,
-    uint32_t num_kv,
-    float scale,
-    uint32_t window_size,
-    float eps,
-    float qk_offset,
-    float rope_base,
-    uint32_t rotary_dim
-) {
-    if (!init_xpu()) return;
-    const uint32_t THREADS_PER_TG = 256; 
-
-    g_queue->submit([&](sycl::handler& h) {
-        sycl::local_accessor<float, 1> tg_q(sycl::range<1>(256), h);
-        sycl::local_accessor<float, 1> tg_k_normed(sycl::range<1>(256), h);
-        sycl::local_accessor<float, 1> tg_red(sycl::range<1>(8), h);
-        sycl::local_accessor<float, 1> tg_scores(sycl::range<1>(1024), h);
-
-        h.parallel_for(sycl::nd_range<1>(sycl::range<1>(num_q * THREADS_PER_TG), sycl::range<1>(THREADS_PER_TG)), 
-            AttnFusedFunctor{
-                q_in, k_in, v_in, k_cache, v_cache, out, q_weight, k_weight,
-                t, head_dim, num_q, num_kv, scale, window_size, eps, qk_offset, rope_base, rotary_dim,
-                tg_q, tg_k_normed, tg_red, tg_scores
-            });
-    }).wait();
-}
-
-void q4k_qkv_proj(
-    const uint8_t* wq,
-    const uint8_t* wk,
-    const uint8_t* wv,
-    const float* x,
-    float* q_out,
-    float* k_out,
-    float* v_out,
-    uint32_t q_rows,
-    uint32_t k_rows,
-    uint32_t v_rows,
-    uint32_t k
-) {
-    if (!init_xpu()) return;
-    const uint32_t ROWS_PER_TG = 8;
-    const uint32_t BLOCK_SIZE = 144;
-    const uint32_t THREADS_PER_TG = 256;
-
 struct Q4kQkvProjFunctor {
     const uint8_t* wq;
     const uint8_t* wk;
@@ -794,25 +685,6 @@ struct Q4kQkvProjFunctor {
     }
 };
 
-void q4k_qkv_proj(
-    const uint8_t* wq,
-    const uint8_t* wk,
-    const uint8_t* wv,
-    const float* x,
-    float* q_out,
-    float* k_out,
-    float* v_out,
-    size_t q_rows,
-    size_t k_rows,
-    size_t v_rows,
-    size_t k
-) {
-    if (!init_xpu()) return;
-    const uint32_t THREADS_PER_TG = 256;
-    g_queue->parallel_for(sycl::nd_range<1>(sycl::range<1>(((q_rows + k_rows + v_rows + 7) / 8) * THREADS_PER_TG), sycl::range<1>(THREADS_PER_TG)), 
-        Q4kQkvProjFunctor{wq, wk, wv, x, q_out, k_out, v_out, (uint32_t)q_rows, (uint32_t)k_rows, (uint32_t)v_rows, (uint32_t)k}).wait();
-}
-
 struct Q4kProjFunctor {
     const uint8_t* w4k;
     const float* x;
@@ -887,13 +759,6 @@ struct Q4kProjFunctor {
         if (lane == 0) out[row_idx] = acc;
     }
 };
-
-void q4k_proj(const uint8_t* w4k, const float* x, float* out, size_t n, size_t k) {
-    if (!init_xpu()) return;
-    const uint32_t THREADS_PER_TG = 256;
-    g_queue->parallel_for(sycl::nd_range<1>(sycl::range<1>(((n + 7) / 8) * THREADS_PER_TG), sycl::range<1>(THREADS_PER_TG)), 
-        Q4kProjFunctor{w4k, x, out, (uint32_t)n, (uint32_t)k}).wait();
-}
 
 struct Q4kQ6kQkvProjFunctor {
     const uint8_t* wq;
@@ -1047,41 +912,6 @@ struct Q4kQ6kQkvProjFunctor {
     }
 };
 
-void q4k_q6k_qkv_proj(
-    const uint8_t* wq,
-    const uint8_t* wk,
-    const uint8_t* wv,
-    const float* x,
-    float* q_out,
-    float* k_out,
-    float* v_out,
-    uint32_t q_rows,
-    uint32_t k_rows,
-    uint32_t v_rows,
-    uint32_t k
-) {
-    if (!init_xpu()) return;
-    const uint32_t THREADS_PER_TG = 128;
-                            (float)((int8_t)(((la >> 4) & 0x0F) | ((hi & 0x0C) << 2)) - 32) * xl[sb_off + 1] +
-                            (float)((int8_t)((lb & 0x0F) | ((hi & 0x30))) - 32) * xl[sb_off + 2] +
-                            (float)((int8_t)(((lb >> 4) & 0x0F) | ((hi & 0xC0) >> 2)) - 32) * xl[sb_off + 3]
-                        );
-                    };
-
-                    acc += compute_dot(base, 0);
-                    acc += compute_dot(base + 64, 4);
-                    acc += compute_dot(base + 128, 8);
-                    acc += compute_dot(base + 192, 12);
-                }
-
-                auto sub_g = item.get_sub_group();
-                acc = sycl::reduce_over_group(sub_g, acc, sycl::plus<>());
-                if (lane == 0) v_out[local_row] = acc;
-            }
-        });
-    }).wait();
-}
-
 struct GeluTanhFunctor {
     const float* input;
     float* out;
@@ -1096,11 +926,6 @@ struct GeluTanhFunctor {
         out[i] = 0.5f * x * (1.0f + t);
     }
 };
-
-void gelu_tanh(const float* input, float* out, size_t n) {
-    if (!init_xpu()) return;
-    g_queue->parallel_for(sycl::range<1>(n), GeluTanhFunctor{input, out}).wait();
-}
 
 struct Q4MatVecQ8Functor {
     const uint8_t* q4;
@@ -1187,38 +1012,6 @@ struct Q4MatVecQ8Functor {
     }
 };
 
-void q4_matvec_v4(
-    const uint8_t* q4,
-    const int8_t* q8,
-    const float* q8s,
-    float* out,
-    size_t n,
-    size_t k
-) {
-    if (!init_xpu()) return;
-    g_queue->submit([&](sycl::handler& h) {
-        sycl::local_accessor<int8_t, 1> tg_q8(sycl::range<1>(8192), h);
-        sycl::local_accessor<float, 1> tg_q8s(sycl::range<1>(256), h);
-        h.parallel_for(sycl::nd_range<1>(sycl::range<1>((n / 8) * 256), sycl::range<1>(256)), 
-            Q4MatVecQ8Functor{q4, q8, q8s, out, (uint32_t)n, (uint32_t)k, tg_q8, tg_q8s});
-    }).wait();
-}
-
-void rope_at_pos_batched_qk(
-    float* q,
-    float* k,
-    size_t head_dim,
-    float rope_base,
-    size_t pos,
-    size_t rotary_dim,
-    size_t num_q,
-    size_t num_kv
-) {
-    if (!init_xpu()) return;
-    size_t total_heads = num_q + num_kv;
-    size_t rdim = (rotary_dim == 0) ? head_dim : std::min(rotary_dim, head_dim);
-    size_t hdim = rdim / 2;
-
 struct RopeAtPosBatchedQkFunctor {
     float* q;
     float* k;
@@ -1250,21 +1043,421 @@ struct RopeAtPosBatchedQkFunctor {
     }
 };
 
-void rope_at_pos_batched_qk(
-    float* q,
-    float* k,
-    size_t head_dim,
-    float rope_base,
-    size_t pos,
-    size_t rotary_dim,
-    size_t num_q,
-    size_t num_kv
-) {
+struct QuantizeQ8Functor {
+    const float* input;
+    int8_t* q8_out;
+    float* scales;
+    uint32_t k;
+
+    void operator()(sycl::id<1> idx) const {
+        uint32_t block = idx[0];
+        uint32_t num_blocks = k / 32;
+        if (block >= num_blocks) return;
+        uint32_t off = block * 32;
+        float amax = 0.0f;
+        for (uint32_t j = 0; j < 32; j++) {
+            float v = sycl::fabs(input[off + j]);
+            if (v > amax) amax = v;
+        }
+        float scale = amax / 127.0f;
+        float inv = (scale > 0.0f) ? (1.0f / scale) : 0.0f;
+        scales[block] = scale;
+        for (uint32_t j = 0; j < 32; j++) {
+            float v = input[off + j] * inv;
+            v = sycl::clamp(v, -128.0f, 127.0f);
+            q8_out[off + j] = (int8_t)sycl::round(v);
+        }
+    }
+};
+
+const float tq4_centroids[16] = {
+    -0.1089, -0.0782, -0.0588, -0.0427,
+    -0.0283, -0.0148, -0.0050,  0.0050,
+     0.0148,  0.0283,  0.0427,  0.0588,
+     0.0782,  0.1089,  0.1500,  0.2000
+};
+
+const float tq4_boundaries[15] = {
+    -0.0936, -0.0685, -0.0508, -0.0355,
+    -0.0216, -0.0099,  0.0000,  0.0099,
+     0.0216,  0.0355,  0.0508,  0.0685,
+     0.0936,  0.1295,  0.1750
+};
+
+static inline bool tq_sign_flip(uint32_t i) {
+    return ((i * 2654435761u) >> 16) & 1u;
+}
+
+struct TurboQuantEncodeFunctor {
+    const float* input;
+    float* norms;
+    uint8_t* packed;
+    uint32_t d;
+    uint32_t batch;
+    sycl::local_accessor<float, 1> shared;
+
+    void operator()(sycl::nd_item<1> it) const {
+        uint32_t elem = it.get_local_id(0);
+        uint32_t vec_idx = it.get_group(0);
+        if (vec_idx >= batch || elem >= d) return;
+
+        uint32_t base = vec_idx * d;
+        shared[elem] = input[base + elem];
+        it.barrier(sycl::access::fence_space::local_space);
+
+        // Step 1: L2 norm (thread 0 computes, all read)
+        if (elem == 0) {
+            float sum_sq = 0.0f;
+            for (uint32_t i = 0; i < d; i++) {
+                sum_sq += shared[i] * shared[i];
+            }
+            norms[vec_idx] = sycl::sqrt(sum_sq);
+        }
+        it.barrier(sycl::access::fence_space::local_space);
+
+        float norm = norms[vec_idx];
+        float inv_norm = (norm > 1e-12f) ? (1.0f / norm) : 0.0f;
+
+        // Step 2: Normalize
+        shared[elem] *= inv_norm;
+        it.barrier(sycl::access::fence_space::local_space);
+
+        // Step 3: Sign flips
+        if (tq_sign_flip(elem)) shared[elem] = -shared[elem];
+        it.barrier(sycl::access::fence_space::local_space);
+
+        // Step 4: WHT
+        for (uint32_t hstep = 1; hstep < d; hstep *= 2) {
+            uint32_t blk = hstep * 2;
+            uint32_t blk_idx = elem / blk;
+            uint32_t within = elem % blk;
+            if (within < hstep) {
+                uint32_t j = blk_idx * blk + within;
+                float a = shared[j];
+                float b = shared[j + hstep];
+                shared[j] = a + b;
+                shared[j + hstep] = a - b;
+            }
+            it.barrier(sycl::access::fence_space::local_space);
+        }
+
+        shared[elem] *= 1.0f / sycl::sqrt((float)d);
+
+        // Step 5: Sign flips again
+        if (tq_sign_flip(elem)) shared[elem] = -shared[elem];
+        it.barrier(sycl::access::fence_space::local_space);
+
+        // Step 6: Quantize
+        float y = shared[elem];
+        uint32_t idx = 0;
+        for (uint32_t b = 0; b < 15; b++) {
+            if (y > tq4_boundaries[b]) idx = b + 1;
+        }
+
+        // Step 7: Pack 4-bit
+        uint32_t pack_offset = vec_idx * (d / 2) + elem / 2;
+        if (elem % 2 == 0) {
+            packed[pack_offset] = (uint8_t)(idx & 0x0F);
+        }
+        it.barrier(sycl::access::fence_space::local_space);
+        if (elem % 2 == 1) {
+            packed[pack_offset] |= (uint8_t)((idx & 0x0F) << 4);
+        }
+    }
+};
+
+struct TurboQuantDecodeFunctor {
+    const float* norms;
+    const uint8_t* packed;
+    float* output;
+    uint32_t d;
+    uint32_t batch;
+    sycl::local_accessor<float, 1> shared;
+
+    void operator()(sycl::nd_item<1> it) const {
+        uint32_t elem = it.get_local_id(0);
+        uint32_t vec_idx = it.get_group(0);
+        if (vec_idx >= batch || elem >= d) return;
+
+        // Step 1: Unpack 4-bit index
+        uint32_t pack_offset = vec_idx * (d / 2) + elem / 2;
+        uint8_t byte_val = packed[pack_offset];
+        uint32_t idx = (elem % 2 == 0) ? (byte_val & 0x0F) : ((byte_val >> 4) & 0x0F);
+
+        // Step 2: Centroid lookup
+        shared[elem] = tq4_centroids[idx];
+        it.barrier(sycl::access::fence_space::local_space);
+
+        // Step 3: Sign flips
+        if (tq_sign_flip(elem)) shared[elem] = -shared[elem];
+        it.barrier(sycl::access::fence_space::local_space);
+
+        // Step 4: WHT
+        for (uint32_t hstep = 1; hstep < d; hstep *= 2) {
+            uint32_t blk = hstep * 2;
+            uint32_t blk_idx = elem / blk;
+            uint32_t within = elem % blk;
+            if (within < hstep) {
+                uint32_t j = blk_idx * blk + within;
+                float a = shared[j];
+                float b = shared[j + hstep];
+                shared[j] = a + b;
+                shared[j + hstep] = a - b;
+            }
+            it.barrier(sycl::access::fence_space::local_space);
+        }
+
+        shared[elem] *= 1.0f / sycl::sqrt((float)d);
+
+        // Step 5: Sign flips again
+        if (tq_sign_flip(elem)) shared[elem] = -shared[elem];
+        it.barrier(sycl::access::fence_space::local_space);
+
+        // Step 6: Rescale by norm
+        output[vec_idx * d + elem] = shared[elem] * norms[vec_idx];
+    }
+};
+
+        }
+    }
+};
+
+struct SgemmFunctor {
+    const float* a;
+    const float* b;
+    float* c;
+    uint32_t m;
+    uint32_t n;
+    uint32_t k;
+
+    void operator()(sycl::nd_item<2> it) const {
+        uint32_t row = it.get_global_id(1);
+        uint32_t col = it.get_global_id(0);
+
+        if (row < m && col < n) {
+            float sum = 0.0f;
+            for (uint32_t i = 0; i < k; i++) {
+                sum += a[row * k + i] * b[i * n + col];
+            }
+            c[row * n + col] = sum;
+        }
+    }
+};
+
+struct SgemmTransBFunctor {
+    const float* a;
+    const float* b;
+    float* c;
+    uint32_t m;
+    uint32_t n;
+    uint32_t k;
+
+    void operator()(sycl::nd_item<2> it) const {
+        uint32_t row = it.get_global_id(1);
+        uint32_t col = it.get_global_id(0);
+
+        if (row < m && col < n) {
+            float sum = 0.0f;
+            for (uint32_t i = 0; i < k; i++) {
+                sum += a[row * k + i] * b[col * k + i];
+            }
+            c[row * n + col] = sum;
+        }
+    }
+};
+
+void check_sycl() {
+    std::cout << "Checking SYCL..." << std::endl;
+    if (!init_xpu()) {
+        std::cout << "SYCL Init Failed!" << std::endl;
+        return;
+    }
+    std::cout << "SYCL Init Success. Device: " << g_queue->get_device().get_info<sycl::info::device::name>() << std::endl;
+}
+
+// Function Wrappers
+
+class F32GemvKernel;
+
+void f32_gemv(const float* x, const float* a, float* y, size_t m, size_t k) {
+    std::cout << "f32_gemv start: m=" << m << ", k=" << k << std::endl;
+    if (!init_xpu()) return;
+    std::cout << "f32_gemv: dispatching parallel_for..." << std::endl;
+    try {
+        g_queue->parallel_for<F32GemvKernel>(sycl::range<1>(m), F32GemvFunctor{x, a, y, (uint32_t)k}).wait();
+    } catch (const sycl::exception& e) {
+        std::cerr << "SYCL Kernel Error: " << e.what() << std::endl;
+    }
+    std::cout << "f32_gemv end" << std::endl;
+}
+
+void q4_matvec_v4(const uint8_t* q4, const float* x, float* out, size_t n, size_t k) {
+    if (!init_xpu()) return;
+    g_queue->parallel_for(sycl::range<1>(n), Q4MatVecV4Functor{q4, x, out, (uint32_t)n, (uint32_t)k}).wait();
+}
+
+void q4_vecmat(const uint8_t* q4, const float* x, float* out, size_t m, size_t k) {
+    if (!init_xpu()) return;
+    g_queue->parallel_for(sycl::range<1>(k), Q4VecMatFunctor{q4, x, out, (uint32_t)m, (uint32_t)k}).wait();
+}
+
+void q4k_matvec_8sg(const uint8_t* w4k, const float* x, float* out, size_t n, size_t k) {
+    if (!init_xpu()) return;
+    const uint32_t THREADS_PER_TG = 256;
+    g_queue->parallel_for(sycl::nd_range<1>(sycl::range<1>((n / 8) * THREADS_PER_TG), sycl::range<1>(THREADS_PER_TG)), 
+        Q4kMatVec8sgFunctor{w4k, x, out, (uint32_t)n, (uint32_t)k}).wait();
+}
+
+void q6k_matvec(const uint8_t* w6k, const float* x, float* out, size_t n, size_t k) {
+    if (!init_xpu()) return;
+    const uint32_t THREADS_PER_TG = 128;
+    g_queue->parallel_for(sycl::nd_range<1>(sycl::range<1>((n / 4) * THREADS_PER_TG), sycl::range<1>(THREADS_PER_TG)), 
+        Q6kMatVecFunctor{w6k, x, out, (uint32_t)n, (uint32_t)k}).wait();
+}
+
+void q4k_ffn_gate_up(const uint8_t* wg, const uint8_t* wu, const float* x, float* g_out, float* u_out, size_t n, size_t k) {
+    if (!init_xpu()) return;
+    const uint32_t ROWS_PER_TG = 4;
+    const uint32_t THREADS_PER_TG = 128;
+    uint32_t tgs_per_mat = (uint32_t)((n + ROWS_PER_TG - 1) / ROWS_PER_TG);
+    g_queue->parallel_for(sycl::nd_range<1>(sycl::range<1>(2 * tgs_per_mat * THREADS_PER_TG), sycl::range<1>(THREADS_PER_TG)), 
+        Q4kFfnGateUpFunctor{wg, wu, x, g_out, u_out, (uint32_t)n, (uint32_t)k, tgs_per_mat}).wait();
+}
+
+void silu(const float* input, float* out, size_t n) {
+    if (!init_xpu()) return;
+    g_queue->parallel_for(sycl::range<1>(n), SiluFunctor{input, out}).wait();
+}
+
+void rms_norm(const float* x, const float* weight, float* out, size_t len, float eps, float offset) {
+    if (!init_xpu()) return;
+    size_t wg_size = 256; 
+    g_queue->parallel_for(sycl::nd_range<1>(sycl::range<1>(wg_size), sycl::range<1>(wg_size)), RmsNormFunctor{x, weight, out, len, eps, offset}).wait();
+}
+
+void attn_fused(const float* q_in, const float* k_in, const float* v_in, float* k_cache, float* v_cache, float* out, const float* q_weight, const float* k_weight, uint32_t t, uint32_t head_dim, uint32_t num_q, uint32_t num_kv, float scale, uint32_t window_size, float eps, float qk_offset, float rope_base, uint32_t rotary_dim) {
+    if (!init_xpu()) return;
+    const uint32_t THREADS_PER_TG = 256; 
+    g_queue->submit([&](sycl::handler& h) {
+        sycl::local_accessor<float, 1> tg_q(sycl::range<1>(256), h);
+        sycl::local_accessor<float, 1> tg_k_normed(sycl::range<1>(256), h);
+        sycl::local_accessor<float, 1> tg_red(sycl::range<1>(8), h);
+        sycl::local_accessor<float, 1> tg_scores(sycl::range<1>(1024), h);
+        h.parallel_for(sycl::nd_range<1>(sycl::range<1>(num_q * THREADS_PER_TG), sycl::range<1>(THREADS_PER_TG)), 
+            AttnFusedFunctor{q_in, k_in, v_in, k_cache, v_cache, out, q_weight, k_weight, t, head_dim, num_q, num_kv, scale, window_size, eps, qk_offset, rope_base, rotary_dim, tg_q, tg_k_normed, tg_red, tg_scores});
+    }).wait();
+}
+
+void q4k_qkv_proj(const uint8_t* wq, const uint8_t* wk, const uint8_t* wv, const float* x, float* q_out, float* k_out, float* v_out, uint32_t q_rows, uint32_t k_rows, uint32_t v_rows, uint32_t k) {
+    if (!init_xpu()) return;
+    const uint32_t THREADS_PER_TG = 256;
+    g_queue->parallel_for(sycl::nd_range<1>(sycl::range<1>(((q_rows + k_rows + v_rows + 7) / 8) * THREADS_PER_TG), sycl::range<1>(THREADS_PER_TG)), 
+        Q4kQkvProjFunctor{wq, wk, wv, x, q_out, k_out, v_out, (uint32_t)q_rows, (uint32_t)k_rows, (uint32_t)v_rows, (uint32_t)k}).wait();
+}
+
+void q4k_proj(const uint8_t* w4k, const float* x, float* out, size_t n, size_t k) {
+    if (!init_xpu()) return;
+    const uint32_t THREADS_PER_TG = 256;
+    g_queue->parallel_for(sycl::nd_range<1>(sycl::range<1>(((n + 7) / 8) * THREADS_PER_TG), sycl::range<1>(THREADS_PER_TG)), 
+        Q4kProjFunctor{w4k, x, out, (uint32_t)n, (uint32_t)k}).wait();
+}
+
+void gelu_tanh(const float* input, float* out, size_t n) {
+    if (!init_xpu()) return;
+    g_queue->parallel_for(sycl::range<1>(n), GeluTanhFunctor{input, out}).wait();
+}
+
+void q4_matvec_v4(const uint8_t* q4, const int8_t* q8, const float* q8s, float* out, size_t n, size_t k) {
+    if (!init_xpu()) return;
+    g_queue->submit([&](sycl::handler& h) {
+        sycl::local_accessor<int8_t, 1> tg_q8(sycl::range<1>(8192), h);
+        sycl::local_accessor<float, 1> tg_q8s(sycl::range<1>(256), h);
+        h.parallel_for(sycl::nd_range<1>(sycl::range<1>((n / 8) * 256), sycl::range<1>(256)), 
+            Q4MatVecQ8Functor{q4, q8, q8s, out, (uint32_t)n, (uint32_t)k, tg_q8, tg_q8s});
+    }).wait();
+}
+
+void rope_at_pos_batched_qk(float* q, float* k, size_t head_dim, float rope_base, size_t pos, size_t rotary_dim, size_t num_q, size_t num_kv) {
     if (!init_xpu()) return;
     size_t total_heads = num_q + num_kv;
     size_t rdim = (rotary_dim == 0) ? head_dim : std::min(rotary_dim, head_dim);
     size_t hdim = rdim / 2;
-
     g_queue->parallel_for(sycl::range<2>(total_heads, hdim), 
         RopeAtPosBatchedQkFunctor{q, k, (uint32_t)head_dim, rope_base, (uint32_t)pos, (uint32_t)rdim, (uint32_t)hdim, (uint32_t)num_q}).wait();
 }
+
+void quantize_q8(const float* input, int8_t* q8_out, float* scales, uint32_t k) {
+    if (!init_xpu()) return;
+    g_queue->parallel_for(sycl::range<1>(k / 32), QuantizeQ8Functor{input, q8_out, scales, k}).wait();
+}
+
+void turboquant_encode(const float* input, float* norms, uint8_t* packed, uint32_t d, uint32_t batch) {
+    if (!init_xpu()) return;
+    g_queue->submit([&](sycl::handler& h) {
+        sycl::local_accessor<float, 1> shared(sycl::range<1>(d), h);
+        h.parallel_for(sycl::nd_range<1>(sycl::range<1>(batch * d), sycl::range<1>(d)), TurboQuantEncodeFunctor{input, norms, packed, d, batch, shared});
+    }).wait();
+}
+
+void turboquant_decode(const float* norms, const uint8_t* packed, float* output, uint32_t d, uint32_t batch) {
+    if (!init_xpu()) return;
+    g_queue->submit([&](sycl::handler& h) {
+        sycl::local_accessor<float, 1> shared(sycl::range<1>(d), h);
+        h.parallel_for(sycl::nd_range<1>(sycl::range<1>(batch * d), sycl::range<1>(d)), TurboQuantDecodeFunctor{norms, packed, output, d, batch, shared});
+    }).wait();
+}
+
+void sgemm(const float* a, const float* b, float* c, uint32_t m, uint32_t n, uint32_t k) {
+    if (!init_xpu()) return;
+    g_queue->parallel_for(sycl::nd_range<2>(sycl::range<2>((n + 31) / 32 * 32, (m + 31) / 32 * 32), sycl::range<2>(32, 32)), SgemmFunctor{a, b, c, m, n, k}).wait();
+}
+
+void sgemm_transb(const float* a, const float* b, float* c, uint32_t m, uint32_t n, uint32_t k) {
+    if (!init_xpu()) return;
+    g_queue->parallel_for(sycl::nd_range<2>(sycl::range<2>((n + 31) / 32 * 32, (m + 31) / 32 * 32), sycl::range<2>(32, 32)), SgemmTransBFunctor{a, b, c, m, n, k}).wait();
+}
+
+#ifdef SYCL_DLL_BUILD
+extern "C" {
+    EXPORT bool dll_init_xpu() { return init_xpu(); }
+    EXPORT void dll_get_device_info(char* buf, int max_len) {
+        if (!init_xpu()) { strncpy(buf, "None", max_len); return; }
+        auto name = g_queue->get_device().get_info<sycl::info::device::name>();
+        strncpy(buf, name.c_str(), max_len);
+    }
+    EXPORT uint8_t* dll_allocate_device(size_t size) { return allocate_device(size); }
+    EXPORT uint8_t* dll_allocate_shared(size_t size) { return allocate_shared(size); }
+    EXPORT void dll_free_memory(uint8_t* ptr) { free_memory(ptr); }
+    EXPORT void dll_copy_h2d(uint8_t* dst, const uint8_t* src, size_t size) { copy_h2d(dst, src, size); }
+    EXPORT void dll_copy_d2h(uint8_t* dst, const uint8_t* src, size_t size) { copy_d2h(dst, src, size); }
+    EXPORT void dll_f32_gemv(const float* x, const float* a, float* y, size_t m, size_t k) { f32_gemv(x, a, y, m, k); }
+    EXPORT void dll_rms_norm(const float* x, const float* weight, float* out, size_t len, float eps, float offset) { rms_norm(x, weight, out, len, eps, offset); }
+    EXPORT void dll_silu(const float* input, float* out, size_t n) { silu(input, out, n); }
+    EXPORT void dll_gelu_tanh(const float* input, float* out, size_t n) { gelu_tanh(input, out, n); }
+    EXPORT void dll_rope_at_pos_batched_qk(float* q, float* k, size_t head_dim, float rope_base, size_t pos, size_t rotary_dim, size_t num_q, size_t num_kv) { 
+        rope_at_pos_batched_qk(q, k, head_dim, rope_base, pos, rotary_dim, num_q, num_kv); 
+    }
+    EXPORT void dll_q4_vecmat(const uint8_t* q4, const float* x, float* out, size_t m, size_t k) { q4_vecmat(q4, x, out, m, k); }
+    EXPORT void dll_q4k_matvec_8sg(const uint8_t* w4k, const float* x, float* out, size_t n, size_t k) { q4k_matvec_8sg(w4k, x, out, n, k); }
+    EXPORT void dll_q6k_matvec(const uint8_t* w6k, const float* x, float* out, size_t n, size_t k) { q6k_matvec(w6k, x, out, n, k); }
+    EXPORT void dll_q4k_ffn_gate_up(const uint8_t* wg, const uint8_t* wu, const float* x, float* g_out, float* u_out, size_t n, size_t k) {
+        q4k_ffn_gate_up(wg, wu, x, g_out, u_out, n, k);
+    }
+    EXPORT void dll_q4_matvec_v4(const uint8_t* q4, const int8_t* q8, const float* q8s, float* out, size_t n, size_t k) {
+        q4_matvec_v4(q4, q8, q8s, out, n, k);
+    }
+    EXPORT void dll_attn_fused(const float* q_in, const float* k_in, const float* v_in, float* k_cache, float* v_cache, float* out, const float* q_weight, const float* k_weight, uint32_t t, uint32_t head_dim, uint32_t num_q, uint32_t num_kv, float scale, uint32_t window_size, float eps, float qk_offset, float rope_base, uint32_t rotary_dim) {
+        attn_fused(q_in, k_in, v_in, k_cache, v_cache, out, q_weight, k_weight, t, head_dim, num_q, num_kv, scale, window_size, eps, qk_offset, rope_base, rotary_dim);
+    }
+    EXPORT void dll_q4k_qkv_proj(const uint8_t* wq, const uint8_t* wk, const uint8_t* wv, const float* x, float* q_out, float* k_out, float* v_out, uint32_t q_rows, uint32_t k_rows, uint32_t v_rows, uint32_t k) {
+        q4k_qkv_proj(wq, wk, wv, x, q_out, k_out, v_out, q_rows, k_rows, v_rows, k);
+    }
+    EXPORT void dll_q4k_proj(const uint8_t* w4k, const float* x, float* out, size_t n, size_t k) { q4k_proj(w4k, x, out, n, k); }
+    EXPORT void dll_quantize_q8(const float* input, int8_t* q8_out, float* scales, uint32_t k) { quantize_q8(input, q8_out, scales, k); }
+    EXPORT void dll_turboquant_encode(const float* input, float* norms, uint8_t* packed, uint32_t d, uint32_t batch) { turboquant_encode(input, norms, packed, d, batch); }
+    EXPORT void dll_turboquant_decode(const float* norms, const uint8_t* packed, float* output, uint32_t d, uint32_t batch) { turboquant_decode(norms, packed, output, d, batch); }
+    EXPORT void dll_sgemm(const float* a, const float* b, float* c, uint32_t m, uint32_t n, uint32_t k) { sgemm(a, b, c, m, n, k); }
+    EXPORT void dll_sgemm_transb(const float* a, const float* b, float* c, uint32_t m, uint32_t n, uint32_t k) { sgemm_transb(a, b, c, m, n, k); }
+    EXPORT void dll_check_sycl() { check_sycl(); }
+}
+#endif

@@ -29,6 +29,12 @@ pub mod ffi {
             offset: f32,
         );
 
+        unsafe fn dll_quantize_q8(input: *const f32, q8_out: *mut i8, scales: *mut f32, k: u32);
+        unsafe fn dll_turboquant_encode(input: *const f32, norms: *mut f32, packed: *mut u8, d: u32, batch: u32);
+        unsafe fn dll_turboquant_decode(norms: *const f32, packed: *const u8, output: *mut f32, d: u32, batch: u32);
+        unsafe fn dll_sgemm(a: *const f32, b: *const f32, c: *mut f32, m: u32, n: u32, k: u32);
+        unsafe fn dll_sgemm_transb(a: *const f32, b: *const f32, c: *mut f32, m: u32, n: u32, k: u32);
+
         unsafe fn silu(input: *const f32, out: *mut f32, n: usize);
         unsafe fn gelu_tanh(input: *const f32, out: *mut f32, n: usize);
 
@@ -128,5 +134,7 @@ pub mod ffi {
             n: usize,
             k: usize,
         );
+
+        fn check_sycl();
     }
 }

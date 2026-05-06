@@ -1,8 +1,12 @@
 #pragma once
 #include <string>
 #include <memory>
+#ifndef SYCL_BRIDGE_ONLY
 #include <sycl/sycl.hpp>
+#include "cxx.h"
+#else
 #include "rust/cxx.h"
+#endif
 
 bool init_xpu();
 rust::String get_device_info();
@@ -28,6 +32,47 @@ void rms_norm(
     size_t len,
     float eps,
     float offset
+);
+
+void quantize_q8(
+    const float* input,
+    int8_t* q8_out,
+    float* scales,
+    uint32_t k
+);
+
+void turboquant_encode(
+    const float* input,
+    float* norms,
+    uint8_t* packed,
+    uint32_t d,
+    uint32_t batch
+);
+
+void turboquant_decode(
+    const float* norms,
+    const uint8_t* packed,
+    float* output,
+    uint32_t d,
+    uint32_t batch
+);
+
+void sgemm(
+    const float* a,
+    const float* b,
+    float* c,
+    uint32_t m,
+    uint32_t n,
+    uint32_t k
+);
+
+void sgemm_transb(
+    const float* a,
+    const float* b,
+    float* c,
+    uint32_t m,
+    uint32_t n,
+    uint32_t k
 );
 
 void silu(
@@ -138,3 +183,5 @@ void q4k_proj(
     size_t n,
     size_t k
 );
+
+void check_sycl();
