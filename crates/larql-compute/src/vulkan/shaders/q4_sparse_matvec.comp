@@ -1,0 +1,71 @@
+#version 450
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) readonly buffer Q4Weights { uint data_q4[]; };
+layout(set = 0, binding = 1) readonly buffer Q8Input { int data_q8[]; }; // int8_t packed in uint32
+layout(set = 0, binding = 2) readonly buffer Q8Scales { float scales_q8[]; };
+layout(set = 0, binding = 3) readonly buffer Indices { uint indices[]; };
+layout(set = 0, binding = 4) writeonly buffer Output { float out_scores[]; };
+
+layout(push_constant) uniform PushConstants {
+    uint K_selected; // Number of selected rows
+    uint hidden;     // Hidden dimension
+} pcs;
+
+float decode_f16(uint bits) {
+    uint s = (bits >> 15) & 1u;
+    uint e = (bits >> 10) & 0x1Fu;
+    uint m = bits & 0x3FFu;
+    if (e == 0u) {
+        if (m == 0u) return s == 1u ? -0.0f : 0.0f;
+        return (s == 1u ? -1.0f : 1.0f) * ldexp(float(m), -24);
+    } else if (e == 31u) {
+        return m == 0u ? (s == 1u ? -1.0/0.0 : 1.0/0.0) : 0.0/0.0;
+    }
+    return (s == 1u ? -1.0f : 1.0f) * ldexp(float(m | 0x400u), int(e) - 15 - 10);
+}
+
+uint get_q4_byte(uint byte_idx) {
+    uint word = data_q4[byte_idx / 4];
+    return (word >> (8 * (byte_idx % 4))) & 0xFFu;
+}
+
+int get_q8_val(uint idx) {
+    uint word = data_q8[idx / 4];
+    uint b = (word >> (8 * (idx % 4))) & 0xFFu;
+    return b < 128 ? int(b) : int(b) - 256;
+}
+
+void main() {
+    uint tid = gl_GlobalInvocationID.x;
+    if (tid >= pcs.K_selected) return;
+
+    uint row_idx = indices[tid];
+    uint blocks = pcs.hidden / 32;
+    uint bytes_per_row = blocks * 18;
+    uint row_w_base = row_idx * bytes_per_row;
+
+    float acc = 0.0f;
+    for (uint b = 0; b < blocks; b++) {
+        uint block_base = row_w_base + b * 18;
+        uint sb_bits = get_q4_byte(block_base) | (get_q4_byte(block_base + 1) << 8);
+        float combined_scale = decode_f16(sb_bits) * scales_q8[b];
+        
+        uint qs_base = block_base + 2;
+        uint x_off = b * 32;
+
+        int isum = 0;
+        for (uint i = 0; i < 16; i++) {
+            uint byte = get_q4_byte(qs_base + i);
+            int v_lo = int(byte & 0x0Fu) - 8;
+            int v_hi = int(byte >> 4u) - 8;
+            isum += v_lo * get_q8_val(x_off + i);
+            isum += v_hi * get_q8_val(x_off + i + 16);
+        }
+        acc += float(isum) * combined_scale;
+    }
+
+    out_scores[tid] = acc;
+}

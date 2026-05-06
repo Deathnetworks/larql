@@ -106,21 +106,10 @@ void q4_vecmat(
     size_t k
 );
 
-void q4k_matvec_8sg(
-    const uint8_t* w4k,
-    const float* x,
-    float* out,
-    size_t n,
-    size_t k
-);
-
-void q6k_matvec(
-    const uint8_t* w6k,
-    const float* x,
-    float* out,
-    size_t n,
-    size_t k
-);
+void q8_matvec(const int8_t* w8, const int8_t* x8, const float* w8s, const float* x8s, float* out, uint32_t n, uint32_t k);
+void q4k_matvec_8sg(const uint8_t* w4k, const float* x, float* out, size_t n, size_t k);
+void q4k_matvec_stride32(const uint8_t* w4k, const float* x, float* out, size_t n, size_t k);
+void q6k_matvec(const uint8_t* w6k, const float* x, float* out, size_t n, size_t k);
 
 void q4k_ffn_gate_up(
     const uint8_t* wg,
@@ -218,19 +207,9 @@ void qk_norm_rope_fused(
     uint32_t rotary_dim
 );
 
-void q4k_q6k_qkv_proj(
-    const uint8_t* wq,
-    const uint8_t* wk,
-    const uint8_t* wv,
-    const float* x,
-    float* q_out,
-    float* k_out,
-    float* v_out,
-    uint32_t q_rows,
-    uint32_t k_rows,
-    uint32_t v_rows,
-    uint32_t k
-);
+void q4k_q6k_qkv_proj(const uint8_t* wq, const uint8_t* wk, const uint8_t* wv, const float* x, float* q_out, float* k_out, float* v_out, uint32_t q_rows, uint32_t k_rows, uint32_t v_rows, uint32_t k);
+void q4_sparse_matvec(const uint8_t* q4, const int8_t* q8, const float* q8s, const uint32_t* indices, float* out, uint32_t k_selected, uint32_t hidden);
+void sgemm(const float* a, const float* b, float* c, uint32_t m, uint32_t n, uint32_t k);
 
 void residual_ops(
     const float* a,

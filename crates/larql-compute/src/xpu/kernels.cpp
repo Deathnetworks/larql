@@ -1417,6 +1417,104 @@ void sgemm_transb(const float* a, const float* b, float* c, uint32_t m, uint32_t
     g_queue->parallel_for(sycl::nd_range<2>(sycl::range<2>((n + 31) / 32 * 32, (m + 31) / 32 * 32), sycl::range<2>(32, 32)), SgemmTransBFunctor{a, b, c, m, n, k}).wait();
 }
 
+void q8_matvec(const int8_t* w8, const int8_t* x8, const float* w8s, const float* x8s, float* out, uint32_t n, uint32_t k) {
+    if (!init_xpu()) return;
+    g_queue->parallel_for(sycl::range<1>(n), [=](sycl::id<1> idx) {
+        uint32_t row = idx[0];
+        uint32_t blocks = k / 32;
+        float row_acc = 0.0f;
+        for (uint32_t b = 0; b < blocks; b++) {
+            float combined_scale = w8s[row * blocks + b] * x8s[b];
+            const int8_t* wb = w8 + row * k + b * 32;
+            const int8_t* xb = x8 + b * 32;
+            int32_t isum = 0;
+            for (uint32_t i = 0; i < 32; i++) {
+                isum += (int32_t)wb[i] * (int32_t)xb[i];
+            }
+            row_acc += (float)isum * combined_scale;
+        }
+        out[row] = row_acc;
+    }).wait();
+}
+
+void q4_sparse_matvec(const uint8_t* q4, const int8_t* q8, const float* q8s, const uint32_t* indices, float* out, uint32_t k_selected, uint32_t hidden) {
+    if (!init_xpu()) return;
+    g_queue->parallel_for(sycl::range<1>(k_selected), [=](sycl::id<1> idx) {
+        uint32_t tid = idx[0];
+        uint32_t row_idx = indices[tid];
+        uint32_t blocks = hidden / 32;
+        uint32_t bytes_per_row = blocks * 18;
+        const uint8_t* row_w = q4 + row_idx * bytes_per_row;
+
+        float acc = 0.0f;
+        for (uint32_t b = 0; b < blocks; b++) {
+            const uint8_t* blk = row_w + b * 18;
+            uint16_t sb_bits = blk[0] | (blk[1] << 8);
+            float combined_scale = decode_f16(sb_bits) * q8s[b];
+            const uint8_t* qb = blk + 2;
+            const int8_t* q8_ptr = q8 + b * 32;
+
+            int32_t isum = 0;
+            for (uint32_t i = 0; i < 16; i++) {
+                uint8_t byte = qb[i];
+                int32_t v_lo = (int32_t)(byte & 0x0F) - 8;
+                int32_t v_hi = (int32_t)(byte >> 4) - 8;
+                isum += v_lo * (int32_t)q8_ptr[i];
+                isum += v_hi * (int32_t)q8_ptr[i + 16];
+            }
+            acc += (float)isum * combined_scale;
+        }
+        out[tid] = acc;
+    }).wait();
+}
+
+void q4k_matvec_stride32(const uint8_t* w4k, const float* x, float* out, size_t n, size_t k) {
+    if (!init_xpu()) return;
+    g_queue->parallel_for(sycl::range<1>(n), [=](sycl::id<1> idx) {
+        uint32_t row_idx = idx[0];
+        uint32_t superblocks = k / 256;
+        uint32_t bytes_per_row = superblocks * 144;
+        const uint8_t* row_w = w4k + row_idx * bytes_per_row;
+
+        float row_acc = 0.0f;
+        for (uint32_t sb = 0; sb < superblocks; sb++) {
+            const uint8_t* block = row_w + sb * 144;
+            uint16_t d_bits = block[0] | (block[1] << 8);
+            uint16_t dmin_bits = block[2] | (block[3] << 8);
+            float d = decode_f16(d_bits);
+            float dmin = decode_f16(dmin_bits);
+            const uint8_t* sb_bytes = block + 4;
+
+            float sb_acc = 0.0f;
+            for (uint32_t sub = 0; sub < 8; sub++) {
+                uint32_t sc, mn;
+                if (sub < 4) {
+                    sc = sb_bytes[sub] & 0x3F;
+                    mn = sb_bytes[sub + 4] & 0x3F;
+                } else {
+                    sc = (sb_bytes[sub + 4] & 0x0F) | ((sb_bytes[sub - 4] >> 6) << 4);
+                    mn = (sb_bytes[sub + 4] >> 4) | ((sb_bytes[sub] >> 6) << 4);
+                }
+                float scale = d * (float)sc;
+                float mmin = dmin * (float)mn;
+
+                uint32_t group = sub >> 1;
+                bool hi = (sub & 1) != 0;
+                const uint8_t* qs = block + 16 + group * 32;
+
+                for (uint32_t i = 0; i < 32; i++) {
+                    uint8_t byte = qs[i];
+                    float nib = hi ? (float)((byte >> 4) & 0x0F) : (float)(byte & 0x0F);
+                    uint32_t x_idx = sb * 256 + sub * 32 + i;
+                    sb_acc += (scale * nib - mmin) * x[x_idx];
+                }
+            }
+            row_acc += sb_acc;
+        }
+        out[row_idx] = row_acc;
+    }).wait();
+}
+
 #ifdef SYCL_DLL_BUILD
 extern "C" {
     EXPORT bool dll_init_xpu() { return init_xpu(); }
@@ -1456,6 +1554,15 @@ extern "C" {
     EXPORT void dll_quantize_q8(const float* input, int8_t* q8_out, float* scales, uint32_t k) { quantize_q8(input, q8_out, scales, k); }
     EXPORT void dll_turboquant_encode(const float* input, float* norms, uint8_t* packed, uint32_t d, uint32_t batch) { turboquant_encode(input, norms, packed, d, batch); }
     EXPORT void dll_turboquant_decode(const float* norms, const uint8_t* packed, float* output, uint32_t d, uint32_t batch) { turboquant_decode(norms, packed, output, d, batch); }
+    EXPORT void dll_q8_matvec(const int8_t* w8, const int8_t* x8, const float* w8s, const float* x8s, float* out, uint32_t n, uint32_t k) {
+        q8_matvec(w8, x8, w8s, x8s, out, n, k);
+    }
+    EXPORT void dll_q4_sparse_matvec(const uint8_t* q4, const int8_t* q8, const float* q8s, const uint32_t* indices, float* out, uint32_t k_selected, uint32_t hidden) {
+        q4_sparse_matvec(q4, q8, q8s, indices, out, k_selected, hidden);
+    }
+    EXPORT void dll_q4k_matvec_stride32(const uint8_t* w4k, const float* x, float* out, size_t n, size_t k) {
+        q4k_matvec_stride32(w4k, x, out, n, k);
+    }
     EXPORT void dll_sgemm(const float* a, const float* b, float* c, uint32_t m, uint32_t n, uint32_t k) { sgemm(a, b, c, m, n, k); }
     EXPORT void dll_sgemm_transb(const float* a, const float* b, float* c, uint32_t m, uint32_t n, uint32_t k) { sgemm_transb(a, b, c, m, n, k); }
     EXPORT void dll_check_sycl() { check_sycl(); }

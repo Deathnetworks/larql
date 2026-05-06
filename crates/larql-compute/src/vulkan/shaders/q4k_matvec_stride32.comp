@@ -1,0 +1,78 @@
+#version 450
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+
+layout(local_size_x = 32) in; // One simdgroup per row
+
+layout(set = 0, binding = 0) readonly buffer Q4Weights { uint data_q4[]; };
+layout(set = 0, binding = 1) readonly buffer VectorX { float X[]; };
+layout(set = 0, binding = 2) writeonly buffer Output { float out_y[]; };
+
+layout(push_constant) uniform PushConstants {
+    uint N;
+    uint K;
+} pcs;
+
+float decode_f16(uint bits) {
+    uint s = (bits >> 15) & 1u;
+    uint e = (bits >> 10) & 0x1Fu;
+    uint m = bits & 0x3FFu;
+    if (e == 0u) {
+        if (m == 0u) return s == 1u ? -0.0f : 0.0f;
+        return (s == 1u ? -1.0f : 1.0f) * ldexp(float(m), -24);
+    } else if (e == 31u) {
+        return m == 0u ? (s == 1u ? -1.0/0.0 : 1.0/0.0) : 0.0/0.0;
+    }
+    return (s == 1u ? -1.0f : 1.0f) * ldexp(float(m | 0x400u), int(e) - 15 - 10);
+}
+
+uint get_byte(uint byte_idx) {
+    uint word = data_q4[byte_idx / 4];
+    return (word >> (8 * (byte_idx % 4))) & 0xFFu;
+}
+
+void main() {
+    uint lane = gl_SubgroupInvocationID;
+    uint row_idx = gl_WorkGroupID.x; // Dispatch one row per TG
+    if (row_idx >= pcs.N) return;
+
+    const uint superblocks = pcs.K / 256;
+    const uint bytes_per_row = superblocks * 144;
+    uint row_w_base = row_idx * bytes_per_row;
+
+    float acc = 0.0f;
+    uint sh = lane >> 4u;
+    uint inner = lane & 15u;
+
+    for (uint sb = 0; sb < superblocks; sb++) {
+        uint block_base = row_w_base + sb * 144;
+        float d = decode_f16(get_byte(block_base) | (get_byte(block_base + 1) << 8));
+        float dmin = decode_f16(get_byte(block_base + 2) | (get_byte(block_base + 3) << 8));
+
+        for (uint sub = 0; sub < 8; sub++) {
+            uint sc, mn;
+            uint head_off = block_base + 4;
+            if (sub < 4) {
+                sc = get_byte(head_off + sub) & 0x3Fu;
+                mn = get_byte(head_off + sub + 4) & 0x3Fu;
+            } else {
+                sc = (get_byte(head_off + sub + 4) & 0x0Fu) | ((get_byte(head_off + sub - 4) >> 6u) << 4u);
+                mn = (get_byte(head_off + sub + 4) >> 4u) | ((get_byte(head_off + sub) >> 6u) << 4u);
+            }
+            float scale = d * float(sc);
+            float mmin = dmin * float(mn);
+
+            uint group = sub >> 1u;
+            bool hi = (sub & 1u) != 0u;
+            uint byte_idx = block_base + 16 + group * 32 + sh * 16 + inner;
+            uint byte = get_byte(byte_idx);
+            float nib = hi ? float((byte >> 4) & 0x0Fu) : float(byte & 0x0Fu);
+
+            uint x_idx = sb * 256 + sub * 32 + lane;
+            float w = scale * nib - mmin;
+            acc += w * X[x_idx];
+        }
+    }
+
+    acc = subgroupAdd(acc);
+    if (lane == 0) out_y[row_idx] = acc;
+}

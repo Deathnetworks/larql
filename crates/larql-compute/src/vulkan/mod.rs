@@ -66,6 +66,9 @@ pub struct VulkanBackend {
     pub turboquant_decode_pipeline: Arc<vulkano::pipeline::ComputePipeline>,
     pub sgemm_pipeline: Arc<vulkano::pipeline::ComputePipeline>,
     pub sgemm_transb_pipeline: Arc<vulkano::pipeline::ComputePipeline>,
+    pub q4_sparse_matvec_pipeline: Arc<vulkano::pipeline::ComputePipeline>,
+    pub q4k_matvec_stride32_pipeline: Arc<vulkano::pipeline::ComputePipeline>,
+    pub q8_matvec_pipeline: Arc<vulkano::pipeline::ComputePipeline>,
     
     flop_threshold: std::sync::atomic::AtomicUsize,
     kv_cache: std::sync::Mutex<Option<ops::kv_cache::KVCache>>,
@@ -152,6 +155,9 @@ impl VulkanBackend {
             let turboquant_decode_shader = shaders::turboquant_decode::load(device.clone()).expect("Failed to load turboquant_decode shader");
             let sgemm_shader = shaders::sgemm::load(device.clone()).expect("Failed to load sgemm shader");
             let sgemm_transb_shader = shaders::sgemm_transb::load(device.clone()).expect("Failed to load sgemm_transb shader");
+            let q4_sparse_matvec_shader = shaders::q4_sparse_matvec::load(device.clone()).expect("Failed to load q4_sparse_matvec shader");
+            let q4k_matvec_stride32_shader = shaders::q4k_matvec_stride32::load(device.clone()).expect("Failed to load q4k_matvec_stride32 shader");
+            let q8_matvec_shader = shaders::q8_matvec::load(device.clone()).expect("Failed to load q8_matvec shader");
 
             let rms_norm_pipeline = Self::create_compute_pipeline(device, rms_norm_shader.entry_point("main").unwrap());
             let silu_pipeline = Self::create_compute_pipeline(device, silu_shader.entry_point("main").unwrap());
@@ -177,6 +183,9 @@ impl VulkanBackend {
             let turboquant_decode_pipeline = Self::create_compute_pipeline(device, turboquant_decode_shader.entry_point("main").unwrap());
             let sgemm_pipeline = Self::create_compute_pipeline(device, sgemm_shader.entry_point("main").unwrap());
             let sgemm_transb_pipeline = Self::create_compute_pipeline(device, sgemm_transb_shader.entry_point("main").unwrap());
+            let q4_sparse_matvec_pipeline = Self::create_compute_pipeline(device, q4_sparse_matvec_shader.entry_point("main").unwrap());
+            let q4k_matvec_stride32_pipeline = Self::create_compute_pipeline(device, q4k_matvec_stride32_shader.entry_point("main").unwrap());
+            let q8_matvec_pipeline = Self::create_compute_pipeline(device, q8_matvec_shader.entry_point("main").unwrap());
 
             Self {
                 device: Arc::clone(device),
@@ -210,6 +219,9 @@ impl VulkanBackend {
                 turboquant_decode_pipeline,
                 sgemm_pipeline,
                 sgemm_transb_pipeline,
+                q4_sparse_matvec_pipeline,
+                q4k_matvec_stride32_pipeline,
+                q8_matvec_pipeline,
                 flop_threshold: std::sync::atomic::AtomicUsize::new(calibrate::DEFAULT_FLOP_THRESHOLD),
                 kv_cache: std::sync::Mutex::new(None),
                 moe_scratch: std::sync::Mutex::new(None),

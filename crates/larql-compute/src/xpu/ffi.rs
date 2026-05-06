@@ -131,6 +131,9 @@ pub mod ffi {
         unsafe fn dll_v_norm(x: *const f32, out: *mut f32, head_dim: u32, num_heads: u32, eps: f32, batched: bool);
         unsafe fn dll_qk_norm_rope_fused(q: *mut f32, k: *mut f32, q_w: *const f32, k_w: *const f32, head_dim: u32, num_q: u32, eps: f32, offset: f32, rope_base: f32, pos: u32, rdim: u32);
         unsafe fn dll_q4k_q6k_qkv_proj(wq: *const u8, wk: *const u8, wv: *const u8, x: *const f32, q_out: *mut f32, k_out: *mut f32, v_out: *mut f32, q_r: u32, k_r: u32, v_r: u32, k: u32);
+        unsafe fn dll_q8_matvec(w8: *const i8, x8: *const i8, w8s: *const f32, x8s: *const f32, out: *mut f32, n: u32, k: u32);
+        unsafe fn dll_q4_sparse_matvec(q4: *const u8, q8: *const i8, q8s: *const f32, indices: *const u32, out: *mut f32, k_selected: u32, hidden: u32);
+        unsafe fn dll_q4k_matvec_stride32(w4k: *const u8, x: *const f32, out: *mut f32, n: usize, k: usize);
         unsafe fn dll_residual_ops(a: *const f32, b: *const f32, out: *mut f32, len: u32, scalar: f32, mode: u32);
 
         unsafe fn q4k_proj(

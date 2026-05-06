@@ -120,3 +120,21 @@ pub mod qk_norm {
         path: "src/vulkan/shaders/qk_norm.glsl"
     }
 }
+pub mod q4_sparse_matvec {
+    vulkano_shaders::shader! {
+        ty: "compute",
+        path: "src/vulkan/shaders/q4_sparse_matvec.comp"
+    }
+}
+pub mod q4k_matvec_stride32 {
+    vulkano_shaders::shader! {
+        ty: "compute",
+        path: "src/vulkan/shaders/q4k_matvec_stride32.comp"
+    }
+}
+pub mod q8_matvec {
+    vulkano_shaders::shader! {
+        ty: "compute",
+        path: "src/vulkan/shaders/q8_matvec.comp"
+    }
+}
