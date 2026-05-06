@@ -96,8 +96,8 @@ impl QuantMatVec for XpuBackend {
 
         unsafe {
             xpu_ffi::q4_vecmat(
-                act_buf.as_ptr_type(),
                 q4_buf.as_ptr(),
+                act_buf.as_ptr_type(),
                 out_buf.as_mut_ptr_type(),
                 n,
                 k,

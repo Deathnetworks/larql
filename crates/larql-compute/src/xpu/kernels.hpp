@@ -54,10 +54,10 @@ void rope_at_pos_batched_qk(
 );
 
 void q4_vecmat(
-    const float* activation,
     const uint8_t* q4,
+    const float* x,
     float* out,
-    size_t n,
+    size_t m,
     size_t k
 );
 

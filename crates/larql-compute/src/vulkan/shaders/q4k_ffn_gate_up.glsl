@@ -22,14 +22,20 @@ float decode_f16(uint bits) {
 shared float ss[32];
 
 void main() {
-    uint row = gl_WorkGroupID.x;
+    uint global_row = gl_WorkGroupID.x;
     uint lane = gl_LocalInvocationID.x;
     uint k = pc.k;
     uint superblocks = k / 256;
     
-    // GGUF Q4_K: 144 bytes per superblock = 36 uints.
-    uint uints_per_row = superblocks * 36;
+    uint n = pc.n;
+    uint row_idx = global_row % n;
+    bool is_up = (global_row >= n);
     
+    // Each row of GATE/UP is superblocks * 144 bytes = 36 uints.
+    // UP follows GATE in the weight buffer.
+    uint uints_per_row = superblocks * 36;
+    uint row_start_uint = is_up ? (n * uints_per_row + row_idx * uints_per_row) : (row_idx * uints_per_row);
+
     uint ix = lane & 1u;
     uint tid = lane >> 1u;
     uint j = tid >> 1u;
@@ -39,16 +45,11 @@ void main() {
 
     float acc = 0.0;
     for (uint sb = ix; sb < superblocks; sb += 2u) {
-        uint sb_off = row * uints_per_row + sb * 36;
+        uint sb_off = row_start_uint + sb * 36;
         
         uint d_bits = w.data[sb_off];
         float d = decode_f16(d_bits & 0xFFFFu);
         float dmin = decode_f16(d_bits >> 16);
-        
-        // Unpack scales and mins (bytes 4-15 of superblock)
-        // w.data[sb_off + 1] = bytes 4,5,6,7
-        // w.data[sb_off + 2] = bytes 8,9,10,11
-        // w.data[sb_off + 3] = bytes 12,13,14,15
         
         uint sc, mn;
         if (j < 4) {
@@ -73,7 +74,6 @@ void main() {
         uint x_base = sb * 256 + j * 32 + sh * 16;
         float dot_acc = 0.0, sum_acc = 0.0;
         
-        // Nibbles start at byte 16 (uint index 4)
         uint qs_idx = sb_off + 4 + group * 8 + sh * 4;
         for (uint l = 0; l < 4; l++) {
             uint val = w.data[qs_idx + l];
@@ -99,6 +99,6 @@ void main() {
     }
 
     if (lane == 0) {
-        out_buf.data[row] = ss[0];
+        out_buf.data[global_row] = ss[0];
     }
 }

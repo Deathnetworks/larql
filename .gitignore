@@ -39,3 +39,4 @@ workflow_rules.md
 continuity_handover_xpu.md
 /crates/larql-compute/scratch
 crates/larql-compute/build_log.txt
+crates/larql-compute/xpu_errors.txt

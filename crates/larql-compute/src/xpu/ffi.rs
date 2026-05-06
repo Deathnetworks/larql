@@ -44,10 +44,10 @@ pub mod ffi {
         );
 
         unsafe fn q4_vecmat(
-            activation: *const f32,
             q4: *const u8,
+            x: *const f32,
             out: *mut f32,
-            n: usize,
+            m: usize,
             k: usize,
         );
 
