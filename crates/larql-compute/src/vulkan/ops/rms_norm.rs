@@ -17,15 +17,14 @@ pub fn dispatch(
     let device = backend.device();
     let queue = backend.queue();
     
-    let shader = shaders::rms_norm::load(device.clone()).ok()?;
-    let pipeline = VulkanBackend::create_compute_pipeline(device, &shader);
+    let pipeline = backend.rms_norm_pipeline.clone();
 
     let mut out = vec![0.0f32; x.len()];
     let len = x.len() as u32;
     
-    let x_buf = VulkanBuffer::from_slice(device.clone(), x, vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
-    let w_buf = VulkanBuffer::from_slice(device.clone(), weight, vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
-    let out_buf = VulkanBuffer::new(device.clone(), out.len() * 4, vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
+    let x_buf = VulkanBuffer::from_slice(backend, x, vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
+    let w_buf = VulkanBuffer::from_slice(backend, weight, vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
+    let out_buf = VulkanBuffer::new(backend, out.len() * 4, vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
 
     let layout = pipeline.layout().set_layouts().get(0)?;
     let set = PersistentDescriptorSet::new(
@@ -45,6 +44,15 @@ pub fn dispatch(
         CommandBufferUsage::OneTimeSubmit,
     ).ok()?;
 
+    #[repr(C)]
+    #[derive(Clone, Copy, bytemuck::Zeroable, bytemuck::Pod)]
+    struct PushConstants {
+        len: u32,
+        eps: f32,
+        offset: f32,
+    }
+    let push_constants = PushConstants { len, eps, offset: 0.0 };
+
     builder
         .bind_pipeline_compute(pipeline.clone())
         .unwrap()
@@ -54,6 +62,8 @@ pub fn dispatch(
             0,
             set,
         )
+        .unwrap()
+        .push_constants(pipeline.layout().clone(), 0, push_constants)
         .unwrap()
         .dispatch([1, 1, 1]) // One WG for the whole vector
         .unwrap();

@@ -3,7 +3,7 @@
 #extension GL_KHR_shader_subgroup_basic : enable
 #extension GL_KHR_shader_subgroup_arithmetic : enable
 
-layout(local_size_x = 256) in; // 8 subgroups of 32
+layout(local_size_x = 32) in; 
 
 layout(set = 0, binding = 0) readonly buffer Weights { float W[]; }; // [N, K] row-major
 layout(set = 0, binding = 1) readonly buffer VectorX { float X[]; }; // [K]
@@ -15,13 +15,8 @@ layout(push_constant) uniform PushConstants {
 } pcs;
 
 void main() {
-    uint tid = gl_LocalInvocationID.x;
-    uint sg_id = gl_SubgroupID;
-    uint lane = gl_SubgroupInvocationID;
-    uint tg_id = gl_WorkGroupID.x;
-
-    // One row per subgroup
-    uint row = tg_id * 8 + sg_id;
+    uint lane = gl_LocalInvocationID.x;
+    uint row = gl_WorkGroupID.x;
     if (row >= pcs.N) return;
 
     uint w_base = row * pcs.K;

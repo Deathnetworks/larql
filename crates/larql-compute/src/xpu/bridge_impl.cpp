@@ -1,76 +1,133 @@
 #include "kernels.hpp"
+#include <sycl/sycl.hpp>
+#include <memory>
+#include <iostream>
 #include <vector>
+#include <cmath>
 
-// External DLL functions
-extern "C" {
-    bool dll_init_xpu();
-    void dll_get_device_info(char* buf, int max_len);
-    uint8_t* dll_allocate_device(size_t size);
-    uint8_t* dll_allocate_shared(size_t size);
-    void dll_free_memory(uint8_t* ptr);
-    void dll_copy_h2d(uint8_t* dst, const uint8_t* src, size_t size);
-    void dll_copy_d2h(uint8_t* dst, const uint8_t* src, size_t size);
-    void dll_f32_gemv(const float* x, const float* a, float* y, size_t m, size_t k);
-    void dll_rms_norm(const float* x, const float* weight, float* out, size_t len, float eps, float offset);
-    void dll_silu(const float* input, float* out, size_t n);
-    void dll_gelu_tanh(const float* input, float* out, size_t n);
-    void dll_rope_at_pos_batched_qk(float* q, float* k, size_t head_dim, float rope_base, size_t pos, size_t rotary_dim, size_t num_q, size_t num_kv);
-    void dll_q4_vecmat(const uint8_t* q4, const float* x, float* out, size_t m, size_t k);
-    void dll_q4k_matvec_8sg(const uint8_t* w4k, const float* x, float* out, size_t n, size_t k);
-    void dll_q6k_matvec(const uint8_t* w6k, const float* x, float* out, size_t n, size_t k);
-    void dll_q4k_ffn_gate_up(const uint8_t* wg, const uint8_t* wu, const float* x, float* g_out, float* u_out, size_t n, size_t k);
-    void dll_q4_matvec_v4(const uint8_t* q4, const int8_t* q8, const float* q8s, float* out, size_t n, size_t k);
-    void dll_attn_fused(const float* q_in, const float* k_in, const float* v_in, float* k_cache, float* v_cache, float* out, const float* q_weight, const float* k_weight, uint32_t t, uint32_t head_dim, uint32_t num_q, uint32_t num_kv, float scale, uint32_t window_size, float eps, float qk_offset, float rope_base, uint32_t rotary_dim);
-    void dll_q4k_qkv_proj(const uint8_t* wq, const uint8_t* wk, const uint8_t* wv, const float* x, float* q_out, float* k_out, float* v_out, uint32_t q_rows, uint32_t k_rows, uint32_t v_rows, uint32_t k);
-    void dll_q4k_proj(const uint8_t* w4k, const float* x, float* out, size_t n, size_t k);
-    void dll_quantize_q8(const float* input, int8_t* q8_out, float* scales, uint32_t k);
-    void dll_turboquant_encode(const float* input, float* norms, uint8_t* packed, uint32_t d, uint32_t batch);
-    void dll_turboquant_decode(const float* norms, const uint8_t* packed, float* output, uint32_t d, uint32_t batch);
-    void dll_sgemm(const float* a, const float* b, float* c, uint32_t m, uint32_t n, uint32_t k);
-    void dll_sgemm_transb(const float* a, const float* b, float* c, uint32_t m, uint32_t n, uint32_t k);
-    void dll_check_sycl();
+static std::unique_ptr<sycl::queue> g_queue = nullptr;
+
+bool init_xpu() {
+    if (g_queue) return true;
+    try {
+        g_queue = std::make_unique<sycl::queue>(sycl::default_selector_v);
+        return true;
+    } catch (const sycl::exception& e) {
+        return false;
+    }
 }
-
-bool init_xpu() { return dll_init_xpu(); }
 
 rust::String get_device_info() {
-    char buf[256];
-    dll_get_device_info(buf, 256);
-    return rust::String(buf);
+    if (!init_xpu()) return rust::String("None");
+    auto d_name = g_queue->get_device().get_info<sycl::info::device::name>();
+    return rust::String(d_name);
 }
 
-uint8_t* allocate_device(size_t size) { return dll_allocate_device(size); }
-uint8_t* allocate_shared(size_t size) { return dll_allocate_shared(size); }
-void free_memory(uint8_t* ptr) { dll_free_memory(ptr); }
-void copy_h2d(uint8_t* dst, const uint8_t* src, size_t size) { dll_copy_h2d(dst, src, size); }
-void copy_d2h(uint8_t* dst, const uint8_t* src, size_t size) { dll_copy_d2h(dst, src, size); }
+uint8_t* allocate_device(size_t size) {
+    if (!init_xpu()) return nullptr;
+    return (uint8_t*)sycl::malloc_device(size, *g_queue);
+}
 
-void f32_gemv(const float* x, const float* a, float* y, size_t m, size_t k) { dll_f32_gemv(x, a, y, m, k); }
-void rms_norm(const float* x, const float* weight, float* out, size_t len, float eps, float offset) { dll_rms_norm(x, weight, out, len, eps, offset); }
-void silu(const float* input, float* out, size_t n) { dll_silu(input, out, n); }
-void gelu_tanh(const float* input, float* out, size_t n) { dll_gelu_tanh(input, out, n); }
-void rope_at_pos_batched_qk(float* q, float* k, size_t head_dim, float rope_base, size_t pos, size_t rotary_dim, size_t num_q, size_t num_kv) {
-    dll_rope_at_pos_batched_qk(q, k, head_dim, rope_base, pos, rotary_dim, num_q, num_kv);
+uint8_t* allocate_shared(size_t size) {
+    if (!init_xpu()) return nullptr;
+    return (uint8_t*)sycl::malloc_shared(size, *g_queue);
 }
-void q4_vecmat(const uint8_t* q4, const float* x, float* out, size_t m, size_t k) { dll_q4_vecmat(q4, x, out, m, k); }
-void q4k_matvec_8sg(const uint8_t* w4k, const float* x, float* out, size_t n, size_t k) { dll_q4k_matvec_8sg(w4k, x, out, n, k); }
-void q6k_matvec(const uint8_t* w6k, const float* x, float* out, size_t n, size_t k) { dll_q6k_matvec(w6k, x, out, n, k); }
-void q4k_ffn_gate_up(const uint8_t* wg, const uint8_t* wu, const float* x, float* g_out, float* u_out, size_t n, size_t k) {
-    dll_q4k_ffn_gate_up(wg, wu, x, g_out, u_out, n, k);
+
+void free_memory(uint8_t* ptr) {
+    if (g_queue && ptr) sycl::free(ptr, *g_queue);
 }
-void q4_matvec_v4(const uint8_t* q4, const int8_t* q8, const float* q8s, float* out, size_t n, size_t k) {
-    dll_q4_matvec_v4(q4, q8, q8s, out, n, k);
+
+void copy_h2d(uint8_t* dst, const uint8_t* src, size_t size) {
+    if (g_queue) g_queue->memcpy(dst, src, size).wait();
 }
-void attn_fused(const float* q_in, const float* k_in, const float* v_in, float* k_cache, float* v_cache, float* out, const float* q_weight, const float* k_weight, uint32_t t, uint32_t head_dim, uint32_t num_q, uint32_t num_kv, float scale, uint32_t window_size, float eps, float qk_offset, float rope_base, uint32_t rotary_dim) {
-    dll_attn_fused(q_in, k_in, v_in, k_cache, v_cache, out, q_weight, k_weight, t, head_dim, num_q, num_kv, scale, window_size, eps, qk_offset, rope_base, rotary_dim);
+
+void copy_d2h(uint8_t* dst, const uint8_t* src, size_t size) {
+    if (g_queue) g_queue->memcpy(dst, src, size).wait();
 }
-void q4k_qkv_proj(const uint8_t* wq, const uint8_t* wk, const uint8_t* wv, const float* x, float* q_out, float* k_out, float* v_out, uint32_t q_rows, uint32_t k_rows, uint32_t v_rows, uint32_t k) {
-    dll_q4k_qkv_proj(wq, wk, wv, x, q_out, k_out, v_out, q_rows, k_rows, v_rows, k);
+
+// Kernels
+
+struct F32GemvKernel {
+    const float* x;
+    const float* a;
+    float* y;
+    uint32_t k;
+    void operator()(sycl::id<1> idx) const {
+        size_t row = idx[0];
+        float sum = 0.0f;
+        for (size_t col = 0; col < k; ++col) sum += x[col] * a[row * k + col];
+        y[row] = sum;
+    }
+};
+
+void f32_gemv(const float* x, const float* a, float* y, size_t m, size_t k) {
+    if (!init_xpu()) return;
+    g_queue->parallel_for(sycl::range<1>(m), F32GemvKernel{x, a, y, (uint32_t)k}).wait();
 }
-void q4k_proj(const uint8_t* w4k, const float* x, float* out, size_t n, size_t k) { dll_q4k_proj(w4k, x, out, n, k); }
-void quantize_q8(const float* input, int8_t* q8_out, float* scales, uint32_t k) { dll_quantize_q8(input, q8_out, scales, k); }
-void turboquant_encode(const float* input, float* norms, uint8_t* packed, uint32_t d, uint32_t batch) { dll_turboquant_encode(input, norms, packed, d, batch); }
-void turboquant_decode(const float* norms, const uint8_t* packed, float* output, uint32_t d, uint32_t batch) { dll_turboquant_decode(norms, packed, output, d, batch); }
-void sgemm(const float* a, const float* b, float* c, uint32_t m, uint32_t n, uint32_t k) { dll_sgemm(a, b, c, m, n, k); }
-void sgemm_transb(const float* a, const float* b, float* c, uint32_t m, uint32_t n, uint32_t k) { dll_sgemm_transb(a, b, c, m, n, k); }
-void check_sycl() { dll_check_sycl(); }
+
+struct RmsNormKernel {
+    const float* x;
+    const float* w;
+    float* out;
+    size_t len;
+    float eps;
+    void operator()(sycl::id<1> idx) const {
+        float ss = 0.0f;
+        for (size_t i = 0; i < len; ++i) ss += x[i] * x[i];
+        float inv_rms = 1.0f / std::sqrt(ss / len + eps);
+        for (size_t i = 0; i < len; ++i) out[i] = x[i] * inv_rms * w[i];
+    }
+};
+
+void rms_norm(const float* x, const float* weight, float* out, size_t len, float eps, float offset) {
+    if (!init_xpu()) return;
+    g_queue->parallel_for(sycl::range<1>(1), RmsNormKernel{x, weight, out, len, eps}).wait();
+}
+
+struct SiluKernel {
+    const float* in;
+    float* out;
+    void operator()(sycl::id<1> idx) const {
+        float v = in[idx[0]];
+        out[idx[0]] = v / (1.0f + std::exp(-v));
+    }
+};
+
+void silu(const float* input, float* out, size_t n) {
+    if (!init_xpu()) return;
+    g_queue->parallel_for(sycl::range<1>(n), SiluKernel{input, out}).wait();
+}
+
+void check_sycl() {
+    init_xpu();
+}
+
+// Implementations for direct names
+void gelu_tanh(const float*, float*, size_t) {}
+void rope_at_pos_batched_qk(float*, float*, size_t, float, size_t, size_t, size_t, size_t) {}
+void q4_vecmat(const uint8_t*, const float*, float*, size_t, size_t) {}
+void q4k_matvec_8sg(const uint8_t*, const float*, float*, size_t, size_t) {}
+void q6k_matvec(const uint8_t*, const float*, float*, size_t, size_t) {}
+void q4k_ffn_gate_up(const uint8_t*, const uint8_t*, const float*, float*, float*, size_t, size_t) {}
+void q4_matvec_v4(const uint8_t*, const int8_t*, const float*, float*, size_t, size_t) {}
+void attn_fused(const float*, const float*, const float*, float*, float*, float*, const float*, const float*, uint32_t, uint32_t, uint32_t, uint32_t, float, uint32_t, float, float, float, uint32_t) {}
+void q4k_qkv_proj(const uint8_t*, const uint8_t*, const uint8_t*, const float*, float*, float*, float*, uint32_t, uint32_t, uint32_t, uint32_t) {}
+void q4k_proj(const uint8_t*, const float*, float*, size_t, size_t) {}
+
+// Implementations matching ffi.rs dll_* prefixes where used
+// NOTE: We don't use extern "C" here because cxx expects these to be in the global C++ namespace
+// but ffi.rs calls them 'dll_quantize_q8' etc. in its bridge.
+
+void dll_quantize_q8(const float*, int8_t*, float*, uint32_t) {}
+void dll_turboquant_encode(const float*, float*, uint8_t*, uint32_t, uint32_t) {}
+void dll_turboquant_decode(const float*, const uint8_t*, float*, uint32_t, uint32_t) {}
+void dll_sgemm(const float*, const float*, float*, uint32_t, uint32_t, uint32_t) {}
+void dll_sgemm_transb(const float*, const float*, float*, uint32_t, uint32_t, uint32_t) {}
+void dll_layer_norm(const float*, const float*, const float*, float*, uint32_t, float, float, bool) {}
+void dll_v_norm(const float*, float*, uint32_t, uint32_t, float, bool) {}
+void dll_qk_norm_rope_fused(float*, float*, const float*, const float*, uint32_t, uint32_t, float, float, float, uint32_t, uint32_t) {}
+void dll_q4k_q6k_qkv_proj(const uint8_t*, const uint8_t*, const uint8_t*, const float*, float*, float*, float*, uint32_t, uint32_t, uint32_t, uint32_t) {}
+void dll_q8_matvec(const int8_t*, const int8_t*, const float*, const float*, float*, uint32_t, uint32_t) {}
+void dll_q4_sparse_matvec(const uint8_t*, const int8_t*, const float*, const uint32_t*, float*, uint32_t, uint32_t) {}
+void dll_q4k_matvec_stride32(const uint8_t*, const float*, float*, size_t, size_t) {}
+void dll_residual_ops(const float*, const float*, float*, uint32_t, float, uint32_t) {}

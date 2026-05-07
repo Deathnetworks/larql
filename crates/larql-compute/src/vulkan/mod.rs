@@ -10,7 +10,7 @@ use once_cell::sync::Lazy;
 use vulkano::descriptor_set::allocator::StandardDescriptorSetAllocator;
 use vulkano::command_buffer::allocator::StandardCommandBufferAllocator;
 use vulkano::pipeline::compute::ComputePipelineCreateInfo;
-use vulkano::pipeline::layout::PipelineDescriptorSetLayoutCreateInfo;
+use vulkano::pipeline::layout::{PipelineDescriptorSetLayoutCreateInfo, PipelineLayoutCreateInfo};
 use vulkano::pipeline::{ComputePipeline, PipelineLayout, PipelineShaderStageCreateInfo};
 
 pub mod buffers;
@@ -38,6 +38,7 @@ pub struct VulkanBackend {
     queue: Arc<Queue>,
     descriptor_set_allocator: Arc<StandardDescriptorSetAllocator>,
     command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
+    memory_allocator: Arc<vulkano::memory::allocator::StandardMemoryAllocator>,
     pub f32_ops: F32Ops,
     pub q4: Q4Pipelines,
     // Shaders
@@ -80,6 +81,7 @@ static VULKAN_STATE: Lazy<Option<(Arc<Device>, Arc<Queue>)>> = Lazy::new(|| {
 
     let device_extensions = DeviceExtensions {
         khr_storage_buffer_storage_class: true,
+        ext_shader_atomic_float: true,
         ..DeviceExtensions::empty()
     };
 
@@ -105,10 +107,15 @@ static VULKAN_STATE: Lazy<Option<(Arc<Device>, Arc<Queue>)>> = Lazy::new(|| {
             }
         })?;
 
+    let mut enabled_features = physical_device.supported_features().clone();
+    enabled_features.shader_buffer_float32_atomic_add = true;
+    enabled_features.shader_buffer_float32_atomics = true;
+
     let (device, mut queues) = Device::new(
         physical_device,
         DeviceCreateInfo {
             enabled_extensions: device_extensions,
+            enabled_features,
             queue_create_infos: vec![QueueCreateInfo {
                 queue_family_index,
                 ..Default::default()
@@ -162,6 +169,7 @@ impl VulkanBackend {
                 queue: Arc::clone(queue),
                 descriptor_set_allocator: Arc::new(StandardDescriptorSetAllocator::new(device.clone(), Default::default())),
                 command_buffer_allocator: Arc::new(StandardCommandBufferAllocator::new(device.clone(), Default::default())),
+                memory_allocator: Arc::new(vulkano::memory::allocator::StandardMemoryAllocator::new_default(device.clone())),
                 f32_ops,
                 q4,
                 rms_norm_pipeline,
@@ -232,6 +240,10 @@ impl VulkanBackend {
 
     pub fn command_buffer_allocator(&self) -> &Arc<StandardCommandBufferAllocator> {
         &self.command_buffer_allocator
+    }
+
+    pub fn memory_allocator(&self) -> &Arc<vulkano::memory::allocator::StandardMemoryAllocator> {
+        &self.memory_allocator
     }
 
     pub fn calibrate(&self) {

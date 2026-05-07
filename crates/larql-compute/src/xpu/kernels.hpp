@@ -34,14 +34,14 @@ void rms_norm(
     float offset
 );
 
-void quantize_q8(
+void dll_quantize_q8(
     const float* input,
     int8_t* q8_out,
     float* scales,
     uint32_t k
 );
 
-void turboquant_encode(
+void dll_turboquant_encode(
     const float* input,
     float* norms,
     uint8_t* packed,
@@ -49,7 +49,7 @@ void turboquant_encode(
     uint32_t batch
 );
 
-void turboquant_decode(
+void dll_turboquant_decode(
     const float* norms,
     const uint8_t* packed,
     float* output,
@@ -57,7 +57,7 @@ void turboquant_decode(
     uint32_t batch
 );
 
-void sgemm(
+void dll_sgemm(
     const float* a,
     const float* b,
     float* c,
@@ -66,7 +66,7 @@ void sgemm(
     uint32_t k
 );
 
-void sgemm_transb(
+void dll_sgemm_transb(
     const float* a,
     const float* b,
     float* c,
@@ -106,9 +106,9 @@ void q4_vecmat(
     size_t k
 );
 
-void q8_matvec(const int8_t* w8, const int8_t* x8, const float* w8s, const float* x8s, float* out, uint32_t n, uint32_t k);
+void dll_q8_matvec(const int8_t* w8, const int8_t* x8, const float* w8s, const float* x8s, float* out, uint32_t n, uint32_t k);
 void q4k_matvec_8sg(const uint8_t* w4k, const float* x, float* out, size_t n, size_t k);
-void q4k_matvec_stride32(const uint8_t* w4k, const float* x, float* out, size_t n, size_t k);
+void dll_q4k_matvec_stride32(const uint8_t* w4k, const float* x, float* out, size_t n, size_t k);
 void q6k_matvec(const uint8_t* w6k, const float* x, float* out, size_t n, size_t k);
 
 void q4k_ffn_gate_up(
@@ -173,7 +173,7 @@ void q4k_proj(
     size_t k
 );
 
-void layer_norm(
+void dll_layer_norm(
     const float* x,
     const float* weight,
     const float* bias,
@@ -184,7 +184,7 @@ void layer_norm(
     bool has_bias
 );
 
-void v_norm(
+void dll_v_norm(
     const float* x,
     float* out,
     uint32_t head_dim,
@@ -193,7 +193,7 @@ void v_norm(
     bool batched
 );
 
-void qk_norm_rope_fused(
+void dll_qk_norm_rope_fused(
     float* q,
     float* k,
     const float* q_weight,
@@ -207,11 +207,10 @@ void qk_norm_rope_fused(
     uint32_t rotary_dim
 );
 
-void q4k_q6k_qkv_proj(const uint8_t* wq, const uint8_t* wk, const uint8_t* wv, const float* x, float* q_out, float* k_out, float* v_out, uint32_t q_rows, uint32_t k_rows, uint32_t v_rows, uint32_t k);
-void q4_sparse_matvec(const uint8_t* q4, const int8_t* q8, const float* q8s, const uint32_t* indices, float* out, uint32_t k_selected, uint32_t hidden);
-void sgemm(const float* a, const float* b, float* c, uint32_t m, uint32_t n, uint32_t k);
+void dll_q4k_q6k_qkv_proj(const uint8_t* wq, const uint8_t* wk, const uint8_t* wv, const float* x, float* q_out, float* k_out, float* v_out, uint32_t q_rows, uint32_t k_rows, uint32_t v_rows, uint32_t k);
+void dll_q4_sparse_matvec(const uint8_t* q4, const int8_t* q8, const float* q8s, const uint32_t* indices, float* out, uint32_t k_selected, uint32_t hidden);
 
-void residual_ops(
+void dll_residual_ops(
     const float* a,
     const float* b,
     float* out,

@@ -29,8 +29,8 @@ pub fn dispatch(
     let rdim = if rotary_dim == 0 { head_dim } else { rotary_dim.min(head_dim) };
     let hdim = rdim / 2;
 
-    let q_buf = VulkanBuffer::from_slice(device.clone(), q, vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
-    let k_buf = VulkanBuffer::from_slice(device.clone(), k, vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
+    let q_buf = VulkanBuffer::from_slice(backend, q, vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
+    let k_buf = VulkanBuffer::from_slice(backend, k, vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
 
     let layout = pipeline.layout().set_layouts().get(0)?;
     let set = PersistentDescriptorSet::new(

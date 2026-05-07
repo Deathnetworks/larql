@@ -2,9 +2,9 @@ use super::*;
 
 impl XpuBackend {
     /// Full pipeline: attention + FFN for all layers.
-    pub fn full_pipeline(
+    pub fn full_pipeline<'a>(
         &self,
-        _layers: &[FullPipelineLayer],
+        _layers: &[crate::FullPipelineLayer<'a>],
         _x: &[f32],
         _hidden: usize,
         _inter: usize,

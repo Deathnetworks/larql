@@ -21,7 +21,9 @@ impl ComputeBackend for VulkanBackend {
     }
 
     fn supports(&self, cap: Capability) -> bool {
-        // Porting features from Metal...
-        false
+        match cap {
+            Capability::F32Gemv => true,
+            _ => false,
+        }
     }
 }

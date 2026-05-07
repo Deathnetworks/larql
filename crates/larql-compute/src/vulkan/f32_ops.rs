@@ -64,9 +64,9 @@ impl F32Ops {
         let device = backend.device();
         let queue = backend.queue();
 
-        let a_buf = VulkanBuffer::from_slice(device.clone(), a_data, vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
-        let b_buf = VulkanBuffer::from_slice(device.clone(), b_data, vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
-        let out_buf = VulkanBuffer::new(device.clone(), m * n * 4, vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
+        let a_buf = VulkanBuffer::from_slice(backend, a_data, vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
+        let b_buf = VulkanBuffer::from_slice(backend, b_data, vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
+        let out_buf = VulkanBuffer::new(backend, m * n * 4, vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
 
         let layout = pipeline.layout().set_layouts().get(0)?;
         let set = PersistentDescriptorSet::new(
@@ -86,6 +86,15 @@ impl F32Ops {
             CommandBufferUsage::OneTimeSubmit,
         ).ok()?;
 
+        #[repr(C)]
+        #[derive(Clone, Copy, bytemuck::Zeroable, bytemuck::Pod)]
+        struct PushConstants {
+            m: u32,
+            n: u32,
+            k: u32,
+        }
+        let push_constants = PushConstants { m: m as u32, n: n as u32, k: k as u32 };
+
         builder
             .bind_pipeline_compute(pipeline.clone())
             .unwrap()
@@ -95,6 +104,8 @@ impl F32Ops {
                 0,
                 set,
             )
+            .unwrap()
+            .push_constants(pipeline.layout().clone(), 0, push_constants)
             .unwrap()
             .dispatch([n.div_ceil(32) as u32, m.div_ceil(32) as u32, 1])
             .unwrap();

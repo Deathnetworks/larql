@@ -3,9 +3,9 @@
 use super::*;
 
 /// Run the prefill pipeline on XPU.
-pub fn dispatch_prefill(
+pub fn dispatch_prefill<'a>(
     _backend: &XpuBackend,
-    _layers: &[FullPipelineLayer],
+    _layers: &[crate::FullPipelineLayer<'a>],
     _x: &[f32],
     _hidden: usize,
     _inter: usize,

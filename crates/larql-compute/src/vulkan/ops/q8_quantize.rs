@@ -23,9 +23,9 @@ pub fn dispatch(
     let mut q8_out = vec![0i8; k as usize];
     let mut scales = vec![0.0f32; num_blocks];
     
-    let input_buf = VulkanBuffer::from_slice(device.clone(), input, vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
-    let q8_out_buf = VulkanBuffer::new(device.clone(), q8_out.len(), vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
-    let scales_buf = VulkanBuffer::new(device.clone(), scales.len() * 4, vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
+    let input_buf = VulkanBuffer::from_slice(backend, input, vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
+    let q8_out_buf = VulkanBuffer::new(backend, q8_out.len(), vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
+    let scales_buf = VulkanBuffer::new(backend, scales.len() * 4, vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
 
     let layout = pipeline.layout().set_layouts().get(0)?;
     let set = PersistentDescriptorSet::new(

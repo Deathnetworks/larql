@@ -1,8 +1,6 @@
-//! QuantMatVec implementation for XPU.
-
 use crate::backend::QuantMatVec;
 use crate::xpu::XpuBackend;
-use crate::xpu::ops::{q4_vecmat, q4k_matvec, q6k_matvec};
+use crate::xpu::ops::{q4_matvec, q4k_matvec};
 
 impl QuantMatVec for XpuBackend {
     fn q4_vecmat(
@@ -12,7 +10,7 @@ impl QuantMatVec for XpuBackend {
         n: usize,
         k: usize,
     ) -> Option<Vec<f32>> {
-        Some(q4_vecmat::dispatch(activation, q4_data, n, k))
+        Some(q4_matvec::dispatch(q4_data, activation, n, k))
     }
 
     fn q4k_matvec(
@@ -27,11 +25,11 @@ impl QuantMatVec for XpuBackend {
 
     fn q6k_matvec(
         &self,
-        q6k_data: &[u8],
-        x: &[f32],
-        num_rows: usize,
-        hidden: usize,
+        _q6k_data: &[u8],
+        _x: &[f32],
+        _num_rows: usize,
+        _hidden: usize,
     ) -> Option<Vec<f32>> {
-        Some(q6k_matvec::dispatch(q6k_data, x, num_rows, hidden))
+        None // XPU q6k not yet implemented
     }
 }

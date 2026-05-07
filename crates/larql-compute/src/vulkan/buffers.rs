@@ -9,6 +9,7 @@
 use vulkano::buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer};
 use vulkano::memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator};
 use vulkano::device::Device;
+use crate::vulkan::VulkanBackend;
 use std::sync::Arc;
 
 /// A Vulkan GPU buffer backed by host-visible device memory.
@@ -18,11 +19,9 @@ pub struct VulkanBuffer {
 
 impl VulkanBuffer {
     /// Allocate a new buffer of `size` bytes.
-    pub fn new(device: Arc<Device>, size: usize, usage: BufferUsage) -> Option<Self> {
-        let allocator = Arc::new(StandardMemoryAllocator::new_default(device));
-
+    pub fn new(backend: &VulkanBackend, size: usize, usage: BufferUsage) -> Option<Self> {
         let buffer = Buffer::new_slice::<u8>(
-            allocator,
+            backend.memory_allocator().clone(),
             BufferCreateInfo {
                 usage: usage | BufferUsage::STORAGE_BUFFER,
                 ..Default::default()
@@ -38,8 +37,8 @@ impl VulkanBuffer {
     }
 
     /// Create a buffer from a byte slice, copying data into GPU memory.
-    pub fn from_data(device: Arc<Device>, data: &[u8], usage: BufferUsage) -> Option<Self> {
-        let buf = Self::new(device, data.len(), usage)?;
+    pub fn from_data(backend: &VulkanBackend, data: &[u8], usage: BufferUsage) -> Option<Self> {
+        let buf = Self::new(backend, data.len(), usage)?;
         {
             let mut write = buf.inner.write().ok()?;
             write[..data.len()].copy_from_slice(data);
@@ -48,9 +47,9 @@ impl VulkanBuffer {
     }
 
     /// Create a buffer from a typed slice (f32, u32, etc.).
-    pub fn from_slice<T: bytemuck::Pod>(device: Arc<Device>, data: &[T], usage: BufferUsage) -> Option<Self> {
+    pub fn from_slice<T: bytemuck::Pod>(backend: &VulkanBackend, data: &[T], usage: BufferUsage) -> Option<Self> {
         let bytes = bytemuck::cast_slice(data);
-        Self::from_data(device, bytes, usage)
+        Self::from_data(backend, bytes, usage)
     }
 
     /// Copy buffer contents back to a typed CPU slice.

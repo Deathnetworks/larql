@@ -21,7 +21,11 @@ impl ComputeBackend for XpuBackend {
     }
 
     fn supports(&self, cap: Capability) -> bool {
-        // Porting features from Metal...
-        false
+        match cap {
+            Capability::F32Gemv => true,
+            Capability::QuantMatVec => true,
+            Capability::Q4VecMat => true,
+            _ => false,
+        }
     }
 }

@@ -17,15 +17,27 @@ pub fn dispatch(
 ) -> Option<Vec<f32>> {
     let device = backend.device();
     let queue = backend.queue();
+    println!("Vulkan Gemv: n={}, k={}", n, k);
     
-    let shader = shaders::f32_gemv::load(device.clone()).ok()?;
-    let pipeline = VulkanBackend::create_compute_pipeline(device, &shader);
+    let pipeline = backend.f32_gemv_pipeline.clone();
+    println!("Pipeline retrieved.");
 
     let mut out = vec![0.0f32; n as usize];
     
-    let w_buf = VulkanBuffer::from_slice(device.clone(), w, vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
-    let x_buf = VulkanBuffer::from_slice(device.clone(), x, vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
-    let out_buf = VulkanBuffer::new(device.clone(), out.len() * 4, vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
+    println!("Creating buffers...");
+    let w_buf = VulkanBuffer::from_slice(backend, w, vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
+    let x_buf = VulkanBuffer::from_slice(backend, x, vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
+    let out_buf = VulkanBuffer::new(backend, out.len() * 4, vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
+    println!("Buffers created.");
+
+    #[repr(C)]
+    #[derive(Clone, Copy, bytemuck::Zeroable, bytemuck::Pod)]
+    struct PushConstants {
+        n: u32,
+        k: u32,
+    }
+
+    let push_constants = PushConstants { n, k };
 
     let layout = pipeline.layout().set_layouts().get(0)?;
     let set = PersistentDescriptorSet::new(
@@ -54,6 +66,8 @@ pub fn dispatch(
             0,
             set,
         )
+        .unwrap()
+        .push_constants(pipeline.layout().clone(), 0, push_constants)
         .unwrap()
         .dispatch([n, 1, 1])
         .unwrap();

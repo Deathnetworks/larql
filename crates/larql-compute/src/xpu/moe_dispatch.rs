@@ -7,9 +7,9 @@ pub struct MoeScratch {
 }
 
 impl XpuBackend {
-    pub fn decode_token_q4k_moe<F>(
+    pub fn decode_token_q4k_moe<'a, F>(
         &self,
-        _layers: &[FullPipelineLayer],
+        _layers: &[crate::FullPipelineLayer<'a>],
         _x: &[f32],
         _hidden: usize,
         _inter: usize,
@@ -23,7 +23,7 @@ impl XpuBackend {
         _get_expert: F,
     ) -> Option<Vec<f32>>
     where
-        F: Fn(usize, usize) -> Option<(&[u8], &[u8])>,
+        F: Fn(usize, usize) -> Option<(&'a [u8], &'a [u8])>,
     {
         unimplemented!("XPU moe_dispatch is not yet ported from Metal")
     }

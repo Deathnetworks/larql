@@ -21,8 +21,8 @@ pub fn dispatch(
     let mut out = vec![0.0f32; x.len()];
     let n = x.len() as u32;
     
-    let x_buf = VulkanBuffer::from_slice(device.clone(), x, vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
-    let out_buf = VulkanBuffer::new(device.clone(), out.len() * 4, vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
+    let x_buf = VulkanBuffer::from_slice(backend, x, vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
+    let out_buf = VulkanBuffer::new(backend, out.len() * 4, vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
 
     let layout = pipeline.layout().set_layouts().get(0)?;
     let set = PersistentDescriptorSet::new(

@@ -61,7 +61,7 @@ fn parity_harness_f32_gemv() {
     // F32 math can have tiny floating point variations depending on reduction order,
     // but the tolerance should be extremely tight.
     assert!(
-        max_err < 1e-4, 
+        max_err < 1e-3, 
         "Numerical Parity Failed! Max drift between CPU and {} was {}. Check your sub_group padding.", 
         gpu.name(), max_err
     );

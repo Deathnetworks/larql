@@ -14,10 +14,10 @@ mod setup;
 pub use profile::ProfileTimings;
 
 impl XpuBackend {
-    pub fn decode_token(
+    pub fn decode_token<'a>(
         &self,
         _kv_cache: &mut (), // Placeholder
-        _layers: &[FullPipelineLayer],
+        _layers: &[crate::FullPipelineLayer<'a>],
         _x: &[f32],
         _hidden: usize,
         _inter: usize,

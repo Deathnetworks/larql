@@ -15,7 +15,7 @@ layout(push_constant) uniform PushConstants {
     float offset;
 } pcs;
 
-shared float tg_p[8]; // Enough for 8 subgroups (256 / 32)
+shared float tg_p[32]; // Enough for 32 subgroups (256 / 8)
 
 void main() {
     uint tid = gl_LocalInvocationID.x;

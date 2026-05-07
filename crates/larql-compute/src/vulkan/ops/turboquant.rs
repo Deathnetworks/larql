@@ -23,9 +23,9 @@ pub fn encode_dispatch(
     let mut norms = vec![0.0f32; batch as usize];
     let mut packed = vec![0u8; (batch * d / 2) as usize];
     
-    let input_buf = VulkanBuffer::from_slice(device.clone(), input, vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
-    let norms_buf = VulkanBuffer::new(device.clone(), norms.len() * 4, vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
-    let packed_buf = VulkanBuffer::new(device.clone(), packed.len(), vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
+    let input_buf = VulkanBuffer::from_slice(backend, input, vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
+    let norms_buf = VulkanBuffer::new(backend, norms.len() * 4, vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
+    let packed_buf = VulkanBuffer::new(backend, packed.len(), vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
 
     let layout = pipeline.layout().set_layouts().get(0)?;
     let set = PersistentDescriptorSet::new(
@@ -91,9 +91,9 @@ pub fn decode_dispatch(
 
     let mut output = vec![0.0f32; (batch * d) as usize];
     
-    let norms_buf = VulkanBuffer::from_slice(device.clone(), norms, vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
-    let packed_buf = VulkanBuffer::from_slice(device.clone(), packed, vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
-    let output_buf = VulkanBuffer::new(device.clone(), output.len() * 4, vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
+    let norms_buf = VulkanBuffer::from_slice(backend, norms, vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
+    let packed_buf = VulkanBuffer::from_slice(backend, packed, vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
+    let output_buf = VulkanBuffer::new(backend, output.len() * 4, vulkano::buffer::BufferUsage::STORAGE_BUFFER)?;
 
     let layout = pipeline.layout().set_layouts().get(0)?;
     let set = PersistentDescriptorSet::new(

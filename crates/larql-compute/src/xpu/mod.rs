@@ -13,7 +13,7 @@ mod moe_dispatch;
 pub mod ops;
 mod pipeline;
 mod prefill;
-pub mod shaders;
+// pub mod shaders;
 pub mod stages;
 mod trait_impl;
 
@@ -56,7 +56,7 @@ impl XpuBackend {
     }
 
     pub fn calibrate(&self) {
-        let threshold = calibrate::calibrate(&self.f32_ops);
+        let threshold = calibrate::calibrate(&self.f32_ops, &self.bufs);
         self.flop_threshold.store(threshold, std::sync::atomic::Ordering::Relaxed);
     }
 
