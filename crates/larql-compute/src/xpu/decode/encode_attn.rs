@@ -7,21 +7,16 @@ use crate::xpu::ops;
 
 pub(super) struct AttnBufs<'a> {
     pub h_buf: &'a XpuBuffer,
-    pub q_out: &'a XpuBuffer,
-    pub k_out: &'a XpuBuffer,
-    pub v_out: &'a XpuBuffer,
-    pub attn_out_buf: &'a XpuBuffer,
-    pub o_out_buf: &'a XpuBuffer,
-    pub ffn_norm_out: &'a XpuBuffer,
-    pub h_post_attn: &'a XpuBuffer,
-    pub o_q8_scratch: &'a XpuBuffer,
-    pub o_q8s_scratch: &'a XpuBuffer,
-    pub ffn_q8: &'a XpuBuffer,
-    pub ffn_q8s: &'a XpuBuffer,
-    pub normed_scratch: &'a XpuBuffer,
+    pub q_out: &'a mut XpuBuffer,
+    pub k_out: &'a mut XpuBuffer,
+    pub v_out: &'a mut XpuBuffer,
+    pub attn_out_buf: &'a mut XpuBuffer,
+    pub o_out_buf: &'a mut XpuBuffer,
+    pub ffn_norm_out: &'a mut XpuBuffer,
+    pub h_post_attn: &'a mut XpuBuffer,
+    pub ffn_q8: &'a mut XpuBuffer,
+    pub ffn_q8s: &'a mut XpuBuffer,
     pub wo: &'a XpuBuffer,
-    pub wo_scales: &'a XpuBuffer,
-    pub post_attn_norm: &'a XpuBuffer,
 }
 
 pub(super) struct AttnDims {
@@ -37,133 +32,111 @@ impl XpuBackend {
         layer: &FullPipelineLayer,
         kv_cache: &mut ops::kv_cache::KVCache,
         layer_idx: usize,
-        bufs: AttnBufs<'_>,
+        mut bufs: AttnBufs<'_>,
         dims: AttnDims,
     ) {
         let AttnDims {
             hidden,
             layer_q_dim,
-            uses_q4k,
+            uses_q4k: _,
             ffn_uses_q4k,
         } = dims;
 
-        let scale = layer.attn_scale;
-        let layer_head_dim = layer.head_dim;
-        let layer_num_q_heads = layer.num_q_heads;
-        let window_size = layer.sliding_window as u32;
-        let layer_rope_base = layer.rope_base;
-        let layer_rotary_dim = if layer.rotary_dim > 0 {
-            layer.rotary_dim
-        } else {
-            layer_head_dim
+        let layer_kv_dim = layer.num_kv_heads * layer.head_dim;
+
+        let flags = crate::xpu::stages::attention::Flags {
+            window_size: layer.sliding_window as u32,
+            rms_eps: if layer.q_norm_weight.is_some() { layer.eps } else { 0.0 },
+            qk_offset: layer.qk_norm_offset,
+            rope_base: layer.rope_base,
+            rotary_dim: if layer.rotary_dim > 0 { layer.rotary_dim as u32 } else { layer.head_dim as u32 },
         };
 
-        // 1. QK Norm
-        if let (Some(q_w), Some(k_w)) = (layer.q_norm_weight, layer.k_norm_weight) {
-            let mut q_w_f32 = vec![0.0f32; layer_head_dim]; // Simplified
-            let mut k_w_f32 = vec![0.0f32; layer_head_dim];
-            
-            crate::xpu::stages::qk_norm::encode_qk_norm(
-                bufs.q_out,
-                bufs.k_out,
-                &q_w_f32,
-                &k_w_f32,
-                layer_head_dim as u32,
-                layer_num_q_heads as u32,
-                layer.eps,
-                layer.qk_norm_offset,
-            );
-        }
+        let mut q_in_f32 = vec![0.0f32; layer_q_dim];
+        let mut k_in_f32 = vec![0.0f32; layer_kv_dim];
+        let mut v_in_f32 = vec![0.0f32; layer_kv_dim];
+        
+        bufs.q_out.copy_to_slice(&mut q_in_f32);
+        bufs.k_out.copy_to_slice(&mut k_in_f32);
+        bufs.v_out.copy_to_slice(&mut v_in_f32);
 
-        // 2. RoPE
-        let pos = kv_cache.layers[layer_idx].current_len as u32;
-        crate::xpu::stages::rope::encode_batched(
-            bufs.q_out,
-            bufs.k_out,
-            layer_head_dim as u32,
-            layer_rope_base,
+        let q_w_f32 = layer.q_norm_weight.unwrap_or(&[]);
+        let k_w_f32 = layer.k_norm_weight.unwrap_or(&[]);
+
+        let pos = kv_cache.layers[layer_idx].current_len;
+
+        // Fused Attention (QK-norm, RoPE, Append, Attend)
+        let attn_out_f32 = crate::xpu::stages::attention::encode(
+            &q_in_f32,
+            &k_in_f32,
+            &v_in_f32,
+            q_w_f32,
+            k_w_f32,
+            &mut kv_cache.layers[layer_idx],
             pos,
-            layer_rotary_dim as u32,
-            layer_num_q_heads as u32,
+            layer.num_q_heads,
+            layer.num_kv_heads,
+            layer.head_dim,
+            layer.attn_scale,
+            flags,
         );
 
-        // 3. V-Norm
-        if layer.has_v_norm {
-            crate::xpu::stages::qk_norm::encode_v_norm(
-                bufs.v_out,
-                layer_head_dim as u32,
-                layer.eps,
-                layer.num_kv_heads as u32,
-            );
-        }
+        bufs.attn_out_buf.copy_from_slice(&attn_out_f32);
 
-        // 4. KV Append + Attend
-        ops::kv_cache::encode_kv_append(
-            &kv_cache.layers[layer_idx],
-            bufs.k_out,
-            bufs.v_out,
-        );
-        ops::kv_cache::encode_kv_attend(
-            &kv_cache.layers[layer_idx],
-            bufs.q_out,
-            bufs.attn_out_buf,
-            layer_num_q_heads,
-            scale,
-            window_size,
-        );
-        kv_cache.layers[layer_idx].current_len += 1;
-
-        // 5a. O projection
-        let mut wo_bytes = vec![0u8; layer.wo.data_len()];
+        // O projection
+        let mut wo_bytes = vec![0u8; layer.wo.data.len()];
         bufs.wo.copy_to_slice(&mut wo_bytes);
         
-        let mut attn_f32 = vec![0.0f32; layer_q_dim];
-        bufs.attn_out_buf.copy_to_slice(&mut attn_f32);
-        
-        crate::xpu::stages::o_proj::encode_o_proj(
-            &wo_bytes,
-            &attn_f32,
-            bufs.o_out_buf, // out buffer
-            layer.wo.format,
-            layer_q_dim,
-            hidden,
-        );
+        let o_out_f32 = if layer.wo.format == crate::QuantFormat::Q6_K {
+            crate::xpu::stages::o_proj::encode_q6k(
+                &wo_bytes,
+                &attn_out_f32,
+                layer_q_dim,
+                hidden,
+            )
+        } else {
+            crate::xpu::stages::o_proj::encode(
+                &wo_bytes,
+                &attn_out_f32,
+                layer_q_dim,
+                hidden,
+            )
+        };
 
-        // 5b. Residual + norm
-        // Using XPU residual stage
-        let pre_ffn_norm_f32 = vec![0.0f32; hidden]; // Simplified
-        let post_attn_norm_f32 = vec![0.0f32; hidden];
-        
-        let mut o_out_f32 = vec![0.0f32; hidden];
-        bufs.o_out_buf.copy_to_slice(&mut o_out_f32);
+        bufs.o_out_buf.copy_from_slice(&o_out_f32);
+
+        // Residual + norm
+        let pre_ffn_norm_f32 = layer.pre_ffn_norm.unwrap_or(&[]);
+        let post_attn_norm_f32 = layer.post_attn_norm;
         
         let mut h_buf_f32 = vec![0.0f32; hidden];
         bufs.h_buf.copy_to_slice(&mut h_buf_f32);
 
-        if ffn_uses_q4k {
-            crate::xpu::stages::residual::encode_residual_norm_store(
-                &h_buf_f32,
-                &o_out_f32,
-                &post_attn_norm_f32,
-                &pre_ffn_norm_f32,
-                bufs.ffn_norm_out,
-                bufs.h_post_attn,
-                hidden,
-                layer.eps,
-                layer.norm_offset,
-            );
-        } else {
-            crate::xpu::stages::residual::encode_residual_norm_q8(
-                &h_buf_f32,
-                &o_out_f32,
-                &post_attn_norm_f32,
-                &pre_ffn_norm_f32,
+        let (h_post_attn_f32, ffn_norm_out_f32) = crate::xpu::stages::residual::encode_post_attn(
+            &h_buf_f32,
+            &o_out_f32,
+            post_attn_norm_f32,
+            pre_ffn_norm_f32,
+            1, // seq_len
+            hidden,
+            layer.eps,
+            layer.norm_offset,
+            layer.has_post_norms,
+        );
+
+        bufs.h_post_attn.copy_from_slice(&h_post_attn_f32);
+        bufs.ffn_norm_out.copy_from_slice(&ffn_norm_out_f32);
+
+        if !ffn_uses_q4k {
+            // Re-quantize for Q8 FFN
+            crate::xpu::stages::input_norm::encode_q8(
+                &ffn_norm_out_f32,
+                &[], // no additional norm weight needed here
                 bufs.ffn_q8,
                 bufs.ffn_q8s,
-                bufs.h_post_attn,
                 hidden,
                 layer.eps,
-                layer.norm_offset,
+                0.0,
             );
         }
     }

@@ -84,12 +84,12 @@ pub fn encode_gated(
             Activation::SiLU =>
                 xpu_ffi::dll_geglu_silu(
                     g_out.as_ptr_type(), u_out.as_ptr_type(),
-                    act_out.as_mut_ptr_type(), inter as u32,
+                    act_out.as_mut_ptr_type(), inter,
                 ),
             Activation::GeluTanh =>
                 xpu_ffi::dll_geglu_gelu_tanh(
                     g_out.as_ptr_type(), u_out.as_ptr_type(),
-                    act_out.as_mut_ptr_type(), inter as u32,
+                    act_out.as_mut_ptr_type(), inter,
                 ),
         }
     }
@@ -126,12 +126,12 @@ pub fn encode_standard(
                 Activation::SiLU =>
                     xpu_ffi::dll_geglu_silu(
                         up_buf.as_ptr_type(), dummy.as_ptr_type(),
-                        act_out.as_mut_ptr_type(), inter as u32,
+                        act_out.as_mut_ptr_type(), inter,
                     ),
                 Activation::GeluTanh =>
                     xpu_ffi::dll_geglu_gelu_tanh(
                         up_buf.as_ptr_type(), dummy.as_ptr_type(),
-                        act_out.as_mut_ptr_type(), inter as u32,
+                        act_out.as_mut_ptr_type(), inter,
                     ),
             }
         }

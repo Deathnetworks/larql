@@ -1,4 +1,4 @@
-//! Step 6 of the decode pipeline: FFN (gate, up, activation, down).
+//! Step 6 of decode loop: FFN projection.
 
 use crate::xpu::XpuBackend;
 use crate::FullPipelineLayer;
@@ -8,81 +8,62 @@ pub(super) struct FfnBufs<'a> {
     pub gate_w: &'a XpuBuffer,
     pub up_w: &'a XpuBuffer,
     pub down_w: &'a XpuBuffer,
-    pub ffn_norm_out: &'a XpuBuffer,
-    pub ffn_q8: &'a XpuBuffer,
-    pub ffn_q8s: &'a XpuBuffer,
-    pub gate_out_scratch: &'a XpuBuffer,
-    pub up_out: &'a XpuBuffer,
-    pub act_buf: &'a XpuBuffer,
-    pub down_out: &'a XpuBuffer,
+    pub ffn_norm_out: &'a mut XpuBuffer,
+    pub down_out: &'a mut XpuBuffer,
 }
 
-#[derive(Copy, Clone)]
 pub(super) struct FfnDims {
     pub hidden: usize,
     pub inter: usize,
-    pub inter_padded: usize,
 }
 
 impl XpuBackend {
     pub(super) fn encode_ffn_step(
         &self,
         layer: &FullPipelineLayer,
-        bufs: FfnBufs<'_>,
+        mut bufs: FfnBufs<'_>,
         dims: FfnDims,
-        uses_q4k: bool,
     ) {
-        let FfnDims { hidden, inter, .. } = dims;
+        let mut x_norm = vec![0.0f32; dims.hidden];
+        bufs.ffn_norm_out.copy_to_slice(&mut x_norm);
 
-        let mut gate_w_bytes = vec![0u8; layer.gate.data_len()];
+        let mut gate_w_bytes = vec![0u8; layer.gate.data.len()];
         bufs.gate_w.copy_to_slice(&mut gate_w_bytes);
-        let mut up_w_bytes = vec![0u8; layer.up.data_len()];
+        let mut up_w_bytes = vec![0u8; layer.up.data.len()];
         bufs.up_w.copy_to_slice(&mut up_w_bytes);
-        let mut down_w_bytes = vec![0u8; layer.down.data_len()];
+        let mut down_w_bytes = vec![0u8; layer.down.data.len()];
         bufs.down_w.copy_to_slice(&mut down_w_bytes);
 
-        let mut ffn_in_f32 = vec![0.0f32; hidden];
-        bufs.ffn_norm_out.copy_to_slice(&mut ffn_in_f32);
+        let activation = match layer.activation {
+            crate::Activation::Silu => crate::xpu::stages::ffn::Activation::SiLU,
+            crate::Activation::GeluTanh => crate::xpu::stages::ffn::Activation::GeluTanh,
+        };
 
-        if uses_q4k {
-            let (down, gate_out) = crate::xpu::stages::ffn::encode_fused_gate_up_q4k(
+        let down_f32 = if layer.is_gated() {
+            crate::xpu::stages::ffn::encode_gated(
                 &gate_w_bytes,
                 &up_w_bytes,
                 &down_w_bytes,
-                &ffn_in_f32,
-                inter,
-                hidden,
-            );
-            bufs.down_out.copy_from_slice(&down);
-            bufs.gate_out_scratch.copy_from_slice(&gate_out);
+                &x_norm,
+                unsafe { std::mem::transmute(layer.gate.format) },
+                unsafe { std::mem::transmute(layer.down.format) },
+                activation,
+                dims.inter,
+                dims.hidden,
+            )
         } else {
-            // Unfused path
-            let gate = crate::xpu::stages::ffn::encode_unfused_gate(
-                &gate_w_bytes,
-                &ffn_in_f32,
-                inter,
-                hidden,
-            );
-            let up = crate::xpu::stages::ffn::encode_unfused_up(
+            crate::xpu::stages::ffn::encode_standard(
                 &up_w_bytes,
-                &ffn_in_f32,
-                inter,
-                hidden,
-            );
-            bufs.gate_out_scratch.copy_from_slice(&gate);
-            bufs.up_out.copy_from_slice(&up);
-            
-            let mut act = vec![0.0f32; inter];
-            crate::xpu::stages::ffn::encode_geglu(&gate, &up, &mut act, inter as u32);
-            bufs.act_buf.copy_from_slice(&act);
-            
-            let down = crate::xpu::stages::ffn::encode_unfused_down(
                 &down_w_bytes,
-                &act,
-                hidden,
-                inter,
-            );
-            bufs.down_out.copy_from_slice(&down);
-        }
+                &x_norm,
+                unsafe { std::mem::transmute(layer.up.format) },
+                unsafe { std::mem::transmute(layer.down.format) },
+                activation,
+                dims.inter,
+                dims.hidden,
+            )
+        };
+
+        bufs.down_out.copy_from_slice(&down_f32);
     }
 }

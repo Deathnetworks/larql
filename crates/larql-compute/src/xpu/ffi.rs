@@ -37,6 +37,8 @@ pub mod ffi {
 
         unsafe fn silu(input: *const f32, out: *mut f32, n: usize);
         unsafe fn gelu_tanh(input: *const f32, out: *mut f32, n: usize);
+        unsafe fn dll_geglu_silu(gate: *const f32, up: *const f32, out: *mut f32, n: usize);
+        unsafe fn dll_geglu_gelu_tanh(gate: *const f32, up: *const f32, out: *mut f32, n: usize);
 
         unsafe fn rope_at_pos_batched_qk(
             q: *mut f32,

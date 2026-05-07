@@ -130,4 +130,57 @@ void dll_q4k_q6k_qkv_proj(const uint8_t*, const uint8_t*, const uint8_t*, const 
 void dll_q8_matvec(const int8_t*, const int8_t*, const float*, const float*, float*, uint32_t, uint32_t) {}
 void dll_q4_sparse_matvec(const uint8_t*, const int8_t*, const float*, const uint32_t*, float*, uint32_t, uint32_t) {}
 void dll_q4k_matvec_stride32(const uint8_t*, const float*, float*, size_t, size_t) {}
-void dll_residual_ops(const float*, const float*, float*, uint32_t, float, uint32_t) {}
+struct GegluSiluKernel {
+    const float* gate;
+    const float* up;
+    float* out;
+    void operator()(sycl::id<1> idx) const {
+        float g = gate[idx[0]];
+        float u = up[idx[0]];
+        out[idx[0]] = (g / (1.0f + std::exp(-g))) * u;
+    }
+};
+
+void dll_geglu_silu(const float* gate, const float* up, float* out, size_t n) {
+    if (!init_xpu()) return;
+    g_queue->parallel_for(sycl::range<1>(n), GegluSiluKernel{gate, up, out}).wait();
+}
+
+struct GegluGeluTanhKernel {
+    const float* gate;
+    const float* up;
+    float* out;
+    void operator()(sycl::id<1> idx) const {
+        float g = gate[idx[0]];
+        float u = up[idx[0]];
+        float gelu = 0.5f * g * (1.0f + std::tanh(0.7978845608f * (g + 0.044715f * g * g * g)));
+        out[idx[0]] = gelu * u;
+    }
+};
+
+void dll_geglu_gelu_tanh(const float* gate, const float* up, float* out, size_t n) {
+    if (!init_xpu()) return;
+    g_queue->parallel_for(sycl::range<1>(n), GegluGeluTanhKernel{gate, up, out}).wait();
+}
+
+struct ResidualOpsKernel {
+    const float* a;
+    const float* b;
+    float* out;
+    float scalar;
+    uint32_t mode;
+    void operator()(sycl::id<1> idx) const {
+        float va = a[idx[0]];
+        float vb = b[idx[0]];
+        if (mode == 0) {
+            out[idx[0]] = va + vb * scalar;
+        } else if (mode == 1) {
+            out[idx[0]] = va * vb * scalar;
+        }
+    }
+};
+
+void dll_residual_ops(const float* a, const float* b, float* out, uint32_t len, float scalar, uint32_t mode) {
+    if (!init_xpu()) return;
+    g_queue->parallel_for(sycl::range<1>(len), ResidualOpsKernel{a, b, out, scalar, mode}).wait();
+}

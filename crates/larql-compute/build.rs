@@ -37,6 +37,8 @@ fn main() {
             .arg("-fsycl")
             .arg("-shared")
             .arg("-DSYCL_DLL_BUILD")
+            .arg("/GS-")
+            .arg("/sdl-")
             .arg("-o").arg(out_dir.join("larql_xpu.dll"))
             .arg("-I").arg(&manifest_dir)
             .arg("-I").arg(manifest_dir.parent().unwrap())
@@ -60,6 +62,8 @@ fn main() {
             .include(repo_root)
             .include(&target_cxx_dir)
             .flag("-fsycl") 
+            .flag("/GS-")
+            .flag("/sdl-")
             .std("c++17") // Explicitly set C++17
             .compile("larql-xpu-bridge");
 

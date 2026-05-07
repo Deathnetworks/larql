@@ -87,4 +87,28 @@ impl KVCache {
     pub fn current_len(&self) -> usize {
         self.layers.first().map(|l| l.current_len).unwrap_or(0)
     }
+
+    pub fn has_shape_mismatch(&self, shapes: &[(usize, usize)]) -> bool {
+        if self.layers.len() != shapes.len() {
+            return true;
+        }
+        for (layer, &(num_kv_heads, head_dim)) in self.layers.iter().zip(shapes) {
+            if layer.num_kv_heads != num_kv_heads || layer.head_dim != head_dim {
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn grow_to_shapes(&mut self, shapes: &[(usize, usize)], max_seq: usize) {
+        if self.has_shape_mismatch(shapes) || self.layers.is_empty() {
+            *self = Self::new_per_layer(shapes, max_seq);
+            return;
+        }
+        let current_max_seq = self.layers[0].max_seq;
+        if max_seq > current_max_seq {
+            // Need to grow (for XPU, since we don't have dynamic growing yet, just reallocate)
+            *self = Self::new_per_layer(shapes, max_seq);
+        }
+    }
 }

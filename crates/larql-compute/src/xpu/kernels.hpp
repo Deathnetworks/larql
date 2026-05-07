@@ -210,6 +210,9 @@ void dll_qk_norm_rope_fused(
 void dll_q4k_q6k_qkv_proj(const uint8_t* wq, const uint8_t* wk, const uint8_t* wv, const float* x, float* q_out, float* k_out, float* v_out, uint32_t q_rows, uint32_t k_rows, uint32_t v_rows, uint32_t k);
 void dll_q4_sparse_matvec(const uint8_t* q4, const int8_t* q8, const float* q8s, const uint32_t* indices, float* out, uint32_t k_selected, uint32_t hidden);
 
+void dll_geglu_silu(const float* gate, const float* up, float* out, size_t n);
+void dll_geglu_gelu_tanh(const float* gate, const float* up, float* out, size_t n);
+
 void dll_residual_ops(
     const float* a,
     const float* b,

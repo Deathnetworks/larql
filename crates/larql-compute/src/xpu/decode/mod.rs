@@ -1,4 +1,5 @@
 use super::*;
+use crate::xpu::buffers::XpuBuffer;
 
 mod encode_attn;
 mod encode_ffn;
@@ -125,59 +126,50 @@ impl XpuBackend {
 
         let num_layers = layers.len();
         
-        // Setup initial buffer
-        let h_init = ops::buffers::XpuBuffer::from_slice(x, false);
+        let mut h_init = XpuBuffer::from_slice(x, false);
         
-        let mut h_a = ops::buffers::XpuBuffer::new_device(hidden * 4);
-        let mut h_b = ops::buffers::XpuBuffer::new_device(hidden * 4);
+        let mut h_a = XpuBuffer::new_device(hidden * 4);
+        let mut h_b = XpuBuffer::new_device(hidden * 4);
         
-        // Scratch buffers (reused across layers)
-        let norm_f32_buf = ops::buffers::XpuBuffer::new_device(hidden * 4);
-        let q_out = ops::buffers::XpuBuffer::new_device(q_dim * 4);
-        let k_out = ops::buffers::XpuBuffer::new_device(kv_dim * 4);
-        let v_out = ops::buffers::XpuBuffer::new_device(kv_dim * 4);
-        let attn_out_buf = ops::buffers::XpuBuffer::new_device(q_dim * 4);
-        let o_out_buf = ops::buffers::XpuBuffer::new_device(hidden * 4);
-        let h_post_attn = ops::buffers::XpuBuffer::new_device(hidden * 4);
-        let ffn_norm_out = ops::buffers::XpuBuffer::new_device(hidden * 4);
+        let mut norm_f32_buf = XpuBuffer::new_device(hidden * 4);
+        let mut q_out = XpuBuffer::new_device(q_dim * 4);
+        let mut k_out = XpuBuffer::new_device(kv_dim * 4);
+        let mut v_out = XpuBuffer::new_device(kv_dim * 4);
+        let mut attn_out_buf = XpuBuffer::new_device(q_dim * 4);
+        let mut o_out_buf = XpuBuffer::new_device(hidden * 4);
+        let mut h_post_attn = XpuBuffer::new_device(hidden * 4);
+        let mut ffn_norm_out = XpuBuffer::new_device(hidden * 4);
         
         let mut inter_padded = inter;
         if inter_padded % 256 != 0 {
             inter_padded = (inter_padded / 256 + 1) * 256;
         }
         
-        let gate_out_scratch = ops::buffers::XpuBuffer::new_device(inter_padded * 4);
-        let up_out = ops::buffers::XpuBuffer::new_device(inter_padded * 4);
-        let act_buf = ops::buffers::XpuBuffer::new_device(inter_padded * 4);
-        let down_out = ops::buffers::XpuBuffer::new_device(hidden * 4);
+        let mut down_out = XpuBuffer::new_device(hidden * 4);
         
-        let ffn_q8 = ops::buffers::XpuBuffer::new_device(hidden);
-        let ffn_q8s = ops::buffers::XpuBuffer::new_device(hidden * 4);
-        let o_q8_scratch = ops::buffers::XpuBuffer::new_device(q_dim);
-        let o_q8s_scratch = ops::buffers::XpuBuffer::new_device(q_dim * 4);
-        let normed_scratch = ops::buffers::XpuBuffer::new_device(hidden * 4);
+        let mut ffn_q8 = XpuBuffer::new_device(hidden);
+        let mut ffn_q8s = XpuBuffer::new_device(hidden * 4);
+        let mut o_q8_scratch = XpuBuffer::new_device(q_dim);
+        let mut o_q8s_scratch = XpuBuffer::new_device(q_dim * 4);
+        let mut normed_scratch = XpuBuffer::new_device(hidden * 4);
 
-        let mut h_buf_ref = &h_init;
+        let mut h_buf_ref = &mut h_init;
         let split_mode = moe_fn.is_some() && moe_collect_fn.is_some();
 
         for l in 0..num_layers {
             let layer = &layers[l];
             let norm_offset = layer.norm_offset;
             let eps = layer.eps;
-            let layer_head_dim = layer.head_dim;
-            let layer_num_q_heads = layer.num_q_heads;
-            let layer_num_kv_heads = layer.num_kv_heads;
             let uses_q4k = layer.wq.format.is_q4k_family();
-            let layer_q_dim = layer_num_q_heads * layer_head_dim;
-            let layer_kv_dim = layer_num_kv_heads * layer_head_dim;
+            let layer_q_dim = layer.num_q_heads * layer.head_dim;
+            let layer_kv_dim = layer.num_kv_heads * layer.head_dim;
             let ffn_uses_q4k = layer.gate.format.is_q4k_family();
 
-            let input_norm_w = self.bufs.get_f32(layer.input_norm_weight.unwrap());
+            let input_norm_w = self.bufs.get_f32(layer.input_norm);
             let wq_w = self.bufs.get_bytes(&layer.wq.data);
             let wk_w = self.bufs.get_bytes(&layer.wk.data);
             let wv_w = self.bufs.get_bytes(&layer.wv.data);
             
-            // Step 1: Input norm + QKV
             self.encode_input_norm_and_qkv(
                 layer,
                 encode_qkv::QkvBufs {
@@ -187,15 +179,15 @@ impl XpuBackend {
                     wq: &wq_w,
                     wk: &wk_w,
                     wv: &wv_w,
-                    wq_scales: &wq_w, // stub
-                    wk_scales: &wk_w, // stub
-                    wv_scales: &wv_w, // stub
-                    norm_out: &norm_f32_buf,
-                    q_out: &q_out,
-                    k_out: &k_out,
-                    v_out: &v_out,
-                    ffn_q8: &ffn_q8,
-                    ffn_q8s: &ffn_q8s,
+                    wq_scales: &wq_w,
+                    wk_scales: &wk_w,
+                    wv_scales: &wv_w,
+                    norm_out: &mut norm_f32_buf,
+                    q_out: &mut q_out,
+                    k_out: &mut k_out,
+                    v_out: &mut v_out,
+                    ffn_q8: &mut ffn_q8,
+                    ffn_q8s: &mut ffn_q8s,
                 },
                 encode_qkv::QkvDims {
                     hidden,
@@ -208,30 +200,24 @@ impl XpuBackend {
             );
 
             let wo_w = self.bufs.get_bytes(&layer.wo.data);
-            let post_attn_w = self.bufs.get_f32(layer.post_attn_norm_weight.unwrap());
+            let post_attn_w = self.bufs.get_f32(layer.post_attn_norm);
 
-            // Steps 1.5 - 5: Attention Block
             self.encode_attention_block(
                 layer,
                 kv_cache,
                 l,
                 encode_attn::AttnBufs {
                     h_buf: h_buf_ref,
-                    q_out: &q_out,
-                    k_out: &k_out,
-                    v_out: &v_out,
-                    attn_out_buf: &attn_out_buf,
-                    o_out_buf: &o_out_buf,
-                    ffn_norm_out: &ffn_norm_out,
-                    h_post_attn: &h_post_attn,
-                    o_q8_scratch: &o_q8_scratch,
-                    o_q8s_scratch: &o_q8s_scratch,
-                    ffn_q8: &ffn_q8,
-                    ffn_q8s: &ffn_q8s,
-                    normed_scratch: &normed_scratch,
+                    q_out: &mut q_out,
+                    k_out: &mut k_out,
+                    v_out: &mut v_out,
+                    attn_out_buf: &mut attn_out_buf,
+                    o_out_buf: &mut o_out_buf,
+                    ffn_norm_out: &mut ffn_norm_out,
+                    h_post_attn: &mut h_post_attn,
+                    ffn_q8: &mut ffn_q8,
+                    ffn_q8s: &mut ffn_q8s,
                     wo: &wo_w,
-                    wo_scales: &wo_w, // stub
-                    post_attn_norm: &post_attn_w,
                 },
                 encode_attn::AttnDims {
                     hidden,
@@ -241,7 +227,11 @@ impl XpuBackend {
                 },
             );
 
-            let new_h_ref = if l % 2 == 0 { &mut h_a } else { &mut h_b };
+            // Cannot conditionally borrow `h_a` vs `h_b` as `new_h_ref`
+            // cleanly over multiple loop iterations due to NLL limitations with mutable 
+            // refs in loops, so we'll do the swap at the end of the loop body.
+            // For now, we'll just use h_a/h_b pointers directly or a swapping mechanism.
+            
             let defer_ffn_for_split = split_mode && layer.moe.is_some();
 
             if !defer_ffn_for_split && !layer.ffn_is_remote {
@@ -255,36 +245,28 @@ impl XpuBackend {
                         gate_w: &gate_w,
                         up_w: &up_w,
                         down_w: &down_w,
-                        ffn_norm_out: &ffn_norm_out,
-                        ffn_q8: &ffn_q8,
-                        ffn_q8s: &ffn_q8s,
-                        gate_out_scratch: &gate_out_scratch,
-                        up_out: &up_out,
-                        act_buf: &act_buf,
-                        down_out: &down_out,
+                        ffn_norm_out: &mut ffn_norm_out,
+                        down_out: &mut down_out,
                     },
                     encode_ffn::FfnDims {
                         hidden,
                         inter,
-                        inter_padded,
                     },
-                    ffn_uses_q4k,
                 );
 
                 self.encode_post_ffn_residual(
                     layer,
                     encode_post_ffn::PostFfnBufs {
-                        down_out: &down_out,
-                        h_post_attn: &h_post_attn,
-                        new_h: new_h_ref,
-                        normed_scratch: &normed_scratch,
+                        down_out: &mut down_out,
+                        h_post_attn: &mut h_post_attn,
+                        new_h: if l % 2 == 0 { &mut h_a } else { &mut h_b },
                     },
                     hidden,
-                    true,
                 );
             }
             
-            h_buf_ref = new_h_ref;
+            // Swap buffer for next iteration
+            h_buf_ref = if l % 2 == 0 { &mut h_a } else { &mut h_b };
         }
 
         let mut result = vec![0.0f32; hidden];
