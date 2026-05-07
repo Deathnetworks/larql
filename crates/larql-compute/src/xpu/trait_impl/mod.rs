@@ -25,6 +25,9 @@ impl ComputeBackend for XpuBackend {
             Capability::F32Gemv => true,
             Capability::QuantMatVec => true,
             Capability::Q4VecMat => true,
+            Capability::RmsNorm => true,
+            Capability::Decode => true,
+            Capability::Prefill => true,
             _ => false,
         }
     }

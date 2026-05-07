@@ -42,10 +42,8 @@ pub fn calibrate(backend: &VulkanBackend, f32_ops: &F32Ops) -> usize {
             let _ = f32_ops.dispatch_transb(backend, a_slice, b_slice, m, n, k);
         });
 
-        if let Some(v_us) = vulkan_us {
-            if v_us < cpu_us.unwrap_or(u64::MAX) {
-                best = best.min(flops);
-            }
+        if vulkan_us < cpu_us {
+            best = best.min(flops);
         }
     }
 
@@ -63,7 +61,7 @@ fn synth_matrix(rows: usize, cols: usize, seed: u64) -> Array2<f32> {
     Array2::from_shape_vec((rows, cols), data).unwrap()
 }
 
-fn bench_median<F: FnMut() -> R, R>(n: usize, mut f: F) -> Option<u64> {
+fn bench_median<F: FnMut()>(n: usize, mut f: F) -> u64 {
     let mut times = Vec::with_capacity(n);
     for _ in 0..n {
         let t0 = Instant::now();
@@ -71,5 +69,5 @@ fn bench_median<F: FnMut() -> R, R>(n: usize, mut f: F) -> Option<u64> {
         times.push(t0.elapsed().as_micros() as u64);
     }
     times.sort_unstable();
-    Some(times[n / 2])
+    times[n / 2]
 }

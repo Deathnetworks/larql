@@ -128,30 +128,24 @@ impl XpuBackend {
         
         let mut h_init = XpuBuffer::from_slice(x, false);
         
-        let mut h_a = XpuBuffer::new_device(hidden * 4);
-        let mut h_b = XpuBuffer::new_device(hidden * 4);
+        // Use ScratchGuard for intermediate buffers (auto-recycled)
+        let mut guard = buffers::ScratchGuard::new(&self.bufs);
         
-        let mut norm_f32_buf = XpuBuffer::new_device(hidden * 4);
-        let mut q_out = XpuBuffer::new_device(q_dim * 4);
-        let mut k_out = XpuBuffer::new_device(kv_dim * 4);
-        let mut v_out = XpuBuffer::new_device(kv_dim * 4);
-        let mut attn_out_buf = XpuBuffer::new_device(q_dim * 4);
-        let mut o_out_buf = XpuBuffer::new_device(hidden * 4);
-        let mut h_post_attn = XpuBuffer::new_device(hidden * 4);
-        let mut ffn_norm_out = XpuBuffer::new_device(hidden * 4);
+        let mut h_a = self.bufs.output(hidden * 4);
+        let mut h_b = self.bufs.output(hidden * 4);
         
-        let mut inter_padded = inter;
-        if inter_padded % 256 != 0 {
-            inter_padded = (inter_padded / 256 + 1) * 256;
-        }
+        let mut norm_f32_buf = self.bufs.output(hidden * 4);
+        let mut q_out = self.bufs.output(q_dim * 4);
+        let mut k_out = self.bufs.output(kv_dim * 4);
+        let mut v_out = self.bufs.output(kv_dim * 4);
+        let mut attn_out_buf = self.bufs.output(q_dim * 4);
+        let mut o_out_buf = self.bufs.output(hidden * 4);
+        let mut h_post_attn = self.bufs.output(hidden * 4);
+        let mut ffn_norm_out = self.bufs.output(hidden * 4);
+        let mut down_out = self.bufs.output(hidden * 4);
         
-        let mut down_out = XpuBuffer::new_device(hidden * 4);
-        
-        let mut ffn_q8 = XpuBuffer::new_device(hidden);
-        let mut ffn_q8s = XpuBuffer::new_device(hidden * 4);
-        let mut o_q8_scratch = XpuBuffer::new_device(q_dim);
-        let mut o_q8s_scratch = XpuBuffer::new_device(q_dim * 4);
-        let mut normed_scratch = XpuBuffer::new_device(hidden * 4);
+        let mut ffn_q8 = self.bufs.output(hidden);
+        let mut ffn_q8s = self.bufs.output(hidden * 4);
 
         let mut h_buf_ref = &mut h_init;
         let split_mode = moe_fn.is_some() && moe_collect_fn.is_some();
@@ -200,7 +194,6 @@ impl XpuBackend {
             );
 
             let wo_w = self.bufs.get_bytes(&layer.wo.data);
-            let post_attn_w = self.bufs.get_f32(layer.post_attn_norm);
 
             self.encode_attention_block(
                 layer,
@@ -227,11 +220,6 @@ impl XpuBackend {
                 },
             );
 
-            // Cannot conditionally borrow `h_a` vs `h_b` as `new_h_ref`
-            // cleanly over multiple loop iterations due to NLL limitations with mutable 
-            // refs in loops, so we'll do the swap at the end of the loop body.
-            // For now, we'll just use h_a/h_b pointers directly or a swapping mechanism.
-            
             let defer_ffn_for_split = split_mode && layer.moe.is_some();
 
             if !defer_ffn_for_split && !layer.ffn_is_remote {
@@ -264,13 +252,62 @@ impl XpuBackend {
                     hidden,
                 );
             }
+
+            if layer.moe.is_some() || layer.ffn_is_remote {
+                let gate_w = self.bufs.get_bytes(&layer.gate.data);
+                let up_w = self.bufs.get_bytes(&layer.up.data);
+                let down_w = self.bufs.get_bytes(&layer.down.data);
+
+                self.handle_moe_interleave(
+                    layer,
+                    moe_interleave::MoeInterleaveCtx {
+                        layer_idx: l,
+                        num_layers,
+                        hidden,
+                        inter,
+                        ffn_uses_q4k,
+                        defer_ffn_for_split,
+                        stage_timing_split: false,
+                        layer_in_snapshot: None,
+                        dump_l0_dir: None,
+                    },
+                    moe_interleave::MoeInterleaveBufs {
+                        gate_w: &gate_w,
+                        up_w: &up_w,
+                        down_w: &down_w,
+                        h_post_attn: &h_post_attn,
+                        ffn_norm_out: &ffn_norm_out,
+                        down_out: &mut down_out,
+                        new_h: if l % 2 == 0 { &mut h_a } else { &mut h_b },
+                    },
+                    moe_interleave::MoeCommandState {
+                        gpu_time: &mut gpu_time,
+                    },
+                    &mut moe_fn,
+                    &mut moe_collect_fn,
+                );
+            }
             
-            // Swap buffer for next iteration
             h_buf_ref = if l % 2 == 0 { &mut h_a } else { &mut h_b };
         }
 
         let mut result = vec![0.0f32; hidden];
         h_buf_ref.copy_to_slice(&mut result);
+
+        // Recycle buffers back to pool
+        self.bufs.recycle(h_a);
+        self.bufs.recycle(h_b);
+        self.bufs.recycle(norm_f32_buf);
+        self.bufs.recycle(q_out);
+        self.bufs.recycle(k_out);
+        self.bufs.recycle(v_out);
+        self.bufs.recycle(attn_out_buf);
+        self.bufs.recycle(o_out_buf);
+        self.bufs.recycle(h_post_attn);
+        self.bufs.recycle(ffn_norm_out);
+        self.bufs.recycle(down_out);
+        self.bufs.recycle(ffn_q8);
+        self.bufs.recycle(ffn_q8s);
 
         let wall_ms = _gpu_time_token_start.elapsed().as_secs_f64() * 1000.0;
         gpu_time.print_if_enabled(wall_ms);

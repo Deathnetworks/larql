@@ -1,0 +1,25 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) readonly buffer GateInput { float gate[]; };
+layout(set = 0, binding = 1) readonly buffer UpInput { float up[]; };
+layout(set = 0, binding = 2) writeonly buffer Output { float x_out[]; };
+
+layout(push_constant) uniform PushConstants {
+    uint N;
+} pcs;
+
+void main() {
+    uint tid = gl_GlobalInvocationID.x;
+    if (tid >= pcs.N) return;
+
+    float g = gate[tid];
+    float u = up[tid];
+    
+    // SiLU / Swish: x / (1 + exp(-x))
+    float silu_g = g / (1.0f + exp(-g));
+    
+    // GEGLU: SiLU(gate) * up
+    x_out[tid] = silu_g * u;
+}

@@ -390,6 +390,95 @@ struct SiluFunctor {
     }
 };
 
+struct LayerNormFunctor {
+    const float* x;
+    const float* weight;
+    const float* bias;
+    float* out;
+    uint32_t len;
+    float eps;
+    float offset;
+    bool has_bias;
+
+    void operator()(sycl::id<1> idx) const {
+        float ss = 0.0f;
+        float sum = 0.0f;
+        for (uint32_t i = 0; i < len; i++) {
+            float v = x[i];
+            sum += v;
+            ss += v * v;
+        }
+        float mean = sum / len;
+        float var = ss / len - mean * mean;
+        float inv_std = 1.0f / sycl::sqrt(var + eps);
+        
+        for (uint32_t i = 0; i < len; i++) {
+            float v = (x[i] - mean) * inv_std * (weight[i] + offset);
+            if (has_bias) v += bias[i];
+            out[i] = v;
+        }
+    }
+};
+
+struct VNormFunctor {
+    const float* x;
+    float* out;
+    uint32_t head_dim;
+    uint32_t num_heads;
+    float eps;
+    bool batched;
+
+    void operator()(sycl::id<1> idx) const {
+        uint32_t head = idx[0];
+        const float* src = x + head * head_dim;
+        float* dst = out + head * head_dim;
+        float ss = 0.0f;
+        for (uint32_t i = 0; i < head_dim; i++) ss += src[i] * src[i];
+        float inv_rms = 1.0f / sycl::sqrt(ss / head_dim + eps);
+        for (uint32_t i = 0; i < head_dim; i++) dst[i] = src[i] * inv_rms;
+    }
+};
+
+struct GegluSiluFunctor {
+    const float* gate;
+    const float* up;
+    float* out;
+    void operator()(sycl::id<1> idx) const {
+        float g = gate[idx[0]];
+        float u = up[idx[0]];
+        out[idx[0]] = (g / (1.0f + sycl::exp(-g))) * u;
+    }
+};
+
+struct GegluGeluTanhFunctor {
+    const float* gate;
+    const float* up;
+    float* out;
+    void operator()(sycl::id<1> idx) const {
+        float g = gate[idx[0]];
+        float u = up[idx[0]];
+        float gelu = 0.5f * g * (1.0f + sycl::tanh(0.7978845608f * (g + 0.044715f * g * g * g)));
+        out[idx[0]] = gelu * u;
+    }
+};
+
+struct ResidualOpsFunctor {
+    const float* a;
+    const float* b;
+    float* out;
+    float scalar;
+    uint32_t mode;
+    void operator()(sycl::id<1> idx) const {
+        float va = a[idx[0]];
+        float vb = b[idx[0]];
+        if (mode == 0) {
+            out[idx[0]] = va + vb * scalar;
+        } else if (mode == 1) {
+            out[idx[0]] = va * vb * scalar;
+        }
+    }
+};
+
 struct RmsNormFunctor {
     const float* x;
     const float* weight;
@@ -1563,6 +1652,34 @@ extern "C" {
     }
     EXPORT void dll_sgemm(const float* a, const float* b, float* c, uint32_t m, uint32_t n, uint32_t k) { sgemm(a, b, c, m, n, k); }
     EXPORT void dll_sgemm_transb(const float* a, const float* b, float* c, uint32_t m, uint32_t n, uint32_t k) { sgemm_transb(a, b, c, m, n, k); }
+    EXPORT void dll_layer_norm(const float* x, const float* weight, const float* bias, float* out, uint32_t len, float eps, float offset, bool has_bias) {
+        if (!init_xpu()) return;
+        g_queue->parallel_for(sycl::range<1>(1), LayerNormFunctor{x, weight, bias, out, len, eps, offset, has_bias}).wait();
+    }
+    EXPORT void dll_v_norm(const float* x, float* out, uint32_t head_dim, uint32_t num_heads, float eps, bool batched) {
+        if (!init_xpu()) return;
+        g_queue->parallel_for(sycl::range<1>(num_heads), VNormFunctor{x, out, head_dim, num_heads, eps, batched}).wait();
+    }
+    EXPORT void dll_qk_norm_rope_fused(float* q, float* k, const float* q_weight, const float* k_weight, uint32_t head_dim, uint32_t num_q, float eps, float offset, float rope_base, uint32_t pos, uint32_t rotary_dim) {
+        if (!init_xpu()) return;
+        // Stub for now
+    }
+    EXPORT void dll_q4k_q6k_qkv_proj(const uint8_t* wq, const uint8_t* wk, const uint8_t* wv, const float* x, float* q_out, float* k_out, float* v_out, uint32_t q_rows, uint32_t k_rows, uint32_t v_rows, uint32_t k) {
+        if (!init_xpu()) return;
+        q4k_qkv_proj(wq, wk, wv, x, q_out, k_out, v_out, q_rows, k_rows, v_rows, k);
+    }
+    EXPORT void dll_geglu_silu(const float* gate, const float* up, float* out, size_t n) {
+        if (!init_xpu()) return;
+        g_queue->parallel_for(sycl::range<1>(n), GegluSiluFunctor{gate, up, out}).wait();
+    }
+    EXPORT void dll_geglu_gelu_tanh(const float* gate, const float* up, float* out, size_t n) {
+        if (!init_xpu()) return;
+        g_queue->parallel_for(sycl::range<1>(n), GegluGeluTanhFunctor{gate, up, out}).wait();
+    }
+    EXPORT void dll_residual_ops(const float* a, const float* b, float* out, uint32_t len, float scalar, uint32_t mode) {
+        if (!init_xpu()) return;
+        g_queue->parallel_for(sycl::range<1>(len), ResidualOpsFunctor{a, b, out, scalar, mode}).wait();
+    }
     EXPORT void dll_check_sycl() { check_sycl(); }
 }
 #endif

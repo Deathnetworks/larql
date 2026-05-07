@@ -18,8 +18,8 @@ pub fn dispatch(
     let device = backend.device();
     let queue = backend.queue();
     
-    let shader = shaders::q4k_matvec::load(device.clone()).ok()?;
-    let pipeline = VulkanBackend::create_compute_pipeline(device, &shader);
+    let kernel = backend.q4k_matvec_pipeline.clone();
+    let pipeline = &kernel.pipeline;
 
     let mut out = vec![0.0f32; n as usize];
     
@@ -59,7 +59,7 @@ pub fn dispatch(
         .unwrap()
         .push_constants(pipeline.layout().clone(), 0, push_constants)
         .unwrap()
-        .dispatch([(n + 255) / 256, 1, 1]) // Simplified dispatch
+        .dispatch([n.div_ceil(kernel.rows_per_tg), 1, 1])
         .unwrap();
 
     let command_buffer = builder.build().ok()?;

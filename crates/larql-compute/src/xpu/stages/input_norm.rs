@@ -23,10 +23,22 @@ pub fn encode_f32(
 ) {
     let x_buf = XpuBuffer::from_slice(x, false);
     let w_buf = XpuBuffer::from_slice(norm_weight, false);
+    encode_f32_buf(&x_buf, &w_buf, out, hidden, eps, norm_offset);
+}
+
+/// Zero-copy RMS norm from existing buffers.
+pub fn encode_f32_buf(
+    x: &XpuBuffer,
+    norm_weight: &XpuBuffer,
+    out: &mut XpuBuffer,
+    hidden: usize,
+    eps: f32,
+    norm_offset: f32,
+) {
     unsafe {
         xpu_ffi::rms_norm(
-            x_buf.as_ptr_type(),
-            w_buf.as_ptr_type(),
+            x.as_ptr_type(),
+            norm_weight.as_ptr_type(),
             out.as_mut_ptr_type(),
             hidden,
             eps,
@@ -50,13 +62,26 @@ pub fn encode_q8(
 ) {
     let x_buf = XpuBuffer::from_slice(x, false);
     let w_buf = XpuBuffer::from_slice(norm_weight, false);
+    encode_q8_buf(&x_buf, &w_buf, q8_out, q8s_out, hidden, eps, norm_offset);
+}
+
+/// Zero-copy RMS norm + Q8 quantise from existing buffers.
+pub fn encode_q8_buf(
+    x: &XpuBuffer,
+    norm_weight: &XpuBuffer,
+    q8_out: &mut XpuBuffer,
+    q8s_out: &mut XpuBuffer,
+    hidden: usize,
+    eps: f32,
+    norm_offset: f32,
+) {
     let mut normed_buf = XpuBuffer::new_device(hidden * std::mem::size_of::<f32>());
 
     // Step 1: rms_norm → normed_buf (f32)
     unsafe {
         xpu_ffi::rms_norm(
-            x_buf.as_ptr_type(),
-            w_buf.as_ptr_type(),
+            x.as_ptr_type(),
+            norm_weight.as_ptr_type(),
             normed_buf.as_mut_ptr_type(),
             hidden,
             eps,

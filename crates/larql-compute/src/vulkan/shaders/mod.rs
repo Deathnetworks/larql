@@ -18,6 +18,18 @@ pub mod rope {
         path: "src/vulkan/shaders/rope.comp", vulkan_version: "1.2"
     }
 }
+pub mod q4_matvec {
+    vulkano_shaders::shader! {
+        ty: "compute",
+        path: "src/vulkan/shaders/q4_matvec.comp", vulkan_version: "1.2"
+    }
+}
+pub mod q4_f32_matvec {
+    vulkano_shaders::shader! {
+        ty: "compute",
+        path: "src/vulkan/shaders/q4_f32_matvec.comp", vulkan_version: "1.2"
+    }
+}
 pub mod q4_vecmat {
     vulkano_shaders::shader! {
         ty: "compute",
@@ -161,5 +173,11 @@ pub mod post_ffn_norm_residual_add {
     vulkano_shaders::shader! {
         ty: "compute",
         path: "src/vulkan/shaders/post_ffn_norm_residual_add.comp", vulkan_version: "1.2"
+    }
+}
+pub mod geglu {
+    vulkano_shaders::shader! {
+        ty: "compute",
+        path: "src/vulkan/shaders/geglu.comp", vulkan_version: "1.2"
     }
 }

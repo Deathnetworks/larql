@@ -18,22 +18,32 @@ use crate::xpu::buffers::XpuBuffer;
 /// - `k`: input hidden size
 /// - Returns: f32 output `[n]`
 pub fn dispatch(q4: &[u8], x: &[f32], n: usize, k: usize) -> Vec<f32> {
-    let mut out = vec![0.0f32; n];
-
     let q4_buf = XpuBuffer::from_slice(q4, false);
     let x_buf = XpuBuffer::from_slice(x, false);
     let mut out_buf = XpuBuffer::new_device(n * std::mem::size_of::<f32>());
 
+    dispatch_buf(&q4_buf, &x_buf, &mut out_buf, n, k);
+
+    let mut out = vec![0.0f32; n];
+    out_buf.copy_to_slice(&mut out);
+    out
+}
+
+/// Zero-copy Q4 × f32 matvec from existing buffers.
+pub fn dispatch_buf(
+    q4: &XpuBuffer,
+    x: &XpuBuffer,
+    out: &mut XpuBuffer,
+    n: usize,
+    k: usize,
+) {
     unsafe {
         xpu_ffi::q4_vecmat(
-            q4_buf.as_ptr_type(),
-            x_buf.as_ptr_type(),
-            out_buf.as_mut_ptr_type(),
+            q4.as_ptr_type(),
+            x.as_ptr_type(),
+            out.as_mut_ptr_type(),
             n,
             k,
         );
     }
-
-    out_buf.copy_to_slice(&mut out);
-    out
 }

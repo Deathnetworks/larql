@@ -23,49 +23,54 @@ pub enum QuantFormat {
 }
 
 /// Dispatch a single-vector matvec by weight format.
-///
-/// - `w`: weight bytes in the appropriate quantized format
-/// - `x`: f32 input vector `[k]`
-/// - `n`: output rows
-/// - `k`: input hidden size
-/// - Returns: f32 output `[n]`
 pub fn encode(w: &[u8], x: &[f32], n: usize, k: usize, format: QuantFormat) -> Vec<f32> {
-    let mut out = vec![0.0f32; n];
-
     let w_buf   = XpuBuffer::from_slice(w, false);
     let x_buf   = XpuBuffer::from_slice(x, false);
     let mut out_buf = XpuBuffer::new_device(n * 4);
 
+    encode_buf(&w_buf, &x_buf, &mut out_buf, n, k, format);
+
+    let mut out = vec![0.0f32; n];
+    out_buf.copy_to_slice(&mut out);
+    out
+}
+
+/// Zero-copy Format-aware matvec from existing buffers.
+pub fn encode_buf(
+    w: &XpuBuffer,
+    x: &XpuBuffer,
+    out: &mut XpuBuffer,
+    n: usize,
+    k: usize,
+    format: QuantFormat,
+) {
     match format {
         QuantFormat::Q4K | QuantFormat::Q4KF => unsafe {
             xpu_ffi::q4k_proj(
-                w_buf.as_ptr_type(),
-                x_buf.as_ptr_type(),
-                out_buf.as_mut_ptr_type(),
+                w.as_ptr_type(),
+                x.as_ptr_type(),
+                out.as_mut_ptr_type(),
                 n,
                 k,
             );
         },
         QuantFormat::Q6K => unsafe {
             xpu_ffi::q6k_matvec(
-                w_buf.as_ptr_type(),
-                x_buf.as_ptr_type(),
-                out_buf.as_mut_ptr_type(),
+                w.as_ptr_type(),
+                x.as_ptr_type(),
+                out.as_mut_ptr_type(),
                 n,
                 k,
             );
         },
         QuantFormat::Q4_0 | QuantFormat::Q8_0 => unsafe {
             xpu_ffi::q4_vecmat(
-                w_buf.as_ptr_type(),
-                x_buf.as_ptr_type(),
-                out_buf.as_mut_ptr_type(),
+                w.as_ptr_type(),
+                x.as_ptr_type(),
+                out.as_mut_ptr_type(),
                 n,
                 k,
             );
         },
     }
-
-    out_buf.copy_to_slice(&mut out);
-    out
 }

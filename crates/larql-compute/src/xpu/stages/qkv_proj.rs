@@ -13,9 +13,6 @@ use crate::xpu::ffi::ffi as xpu_ffi;
 use crate::xpu::buffers::XpuBuffer;
 
 /// Fused Q4_K QKV projection — one kernel for Q, K, V.
-///
-/// `wq/wk/wv`: packed Q4_K weights. `x`: f32 input `[hidden]`.
-/// Returns `(q_out[q_rows], k_out[kv_rows], v_out[kv_rows])`.
 pub fn encode_fused_f32(
     wq: &[u8],
     wk: &[u8],
@@ -25,10 +22,6 @@ pub fn encode_fused_f32(
     kv_rows: usize,
     hidden: usize,
 ) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
-    let mut q_out = vec![0.0f32; q_rows];
-    let mut k_out = vec![0.0f32; kv_rows];
-    let mut v_out = vec![0.0f32; kv_rows];
-
     let wq_buf = XpuBuffer::from_slice(wq, false);
     let wk_buf = XpuBuffer::from_slice(wk, false);
     let wv_buf = XpuBuffer::from_slice(wv, false);
@@ -37,31 +30,53 @@ pub fn encode_fused_f32(
     let mut k_buf = XpuBuffer::new_device(kv_rows * 4);
     let mut v_buf = XpuBuffer::new_device(kv_rows * 4);
 
-    unsafe {
-        xpu_ffi::q4k_qkv_proj(
-            wq_buf.as_ptr_type(),
-            wk_buf.as_ptr_type(),
-            wv_buf.as_ptr_type(),
-            x_buf.as_ptr_type(),
-            q_buf.as_mut_ptr_type(),
-            k_buf.as_mut_ptr_type(),
-            v_buf.as_mut_ptr_type(),
-            q_rows  as u32,
-            kv_rows as u32,
-            kv_rows as u32,
-            hidden  as u32,
-        );
-    }
+    encode_fused_f32_buf(
+        &wq_buf, &wk_buf, &wv_buf,
+        &x_buf,
+        &mut q_buf, &mut k_buf, &mut v_buf,
+        q_rows, kv_rows, hidden,
+    );
 
+    let mut q_out = vec![0.0f32; q_rows];
+    let mut k_out = vec![0.0f32; kv_rows];
+    let mut v_out = vec![0.0f32; kv_rows];
     q_buf.copy_to_slice(&mut q_out);
     k_buf.copy_to_slice(&mut k_out);
     v_buf.copy_to_slice(&mut v_out);
     (q_out, k_out, v_out)
 }
 
+/// Zero-copy Fused Q4_K QKV projection from existing buffers.
+pub fn encode_fused_f32_buf(
+    wq: &XpuBuffer,
+    wk: &XpuBuffer,
+    wv: &XpuBuffer,
+    x: &XpuBuffer,
+    q_out: &mut XpuBuffer,
+    k_out: &mut XpuBuffer,
+    v_out: &mut XpuBuffer,
+    q_rows: usize,
+    kv_rows: usize,
+    hidden: usize,
+) {
+    unsafe {
+        xpu_ffi::q4k_qkv_proj(
+            wq.as_ptr_type(),
+            wk.as_ptr_type(),
+            wv.as_ptr_type(),
+            x.as_ptr_type(),
+            q_out.as_mut_ptr_type(),
+            k_out.as_mut_ptr_type(),
+            v_out.as_mut_ptr_type(),
+            q_rows  as u32,
+            kv_rows as u32,
+            kv_rows as u32,
+            hidden  as u32,
+        );
+    }
+}
+
 /// Fused Q4_K Q/K + Q6_K V QKV projection.
-///
-/// Used by Gemma 4 and similar mixed-quant models.
 pub fn encode_fused_q4k_q6k(
     wq: &[u8],
     wk: &[u8],
@@ -72,10 +87,6 @@ pub fn encode_fused_q4k_q6k(
     v_rows: usize,
     hidden: usize,
 ) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
-    let mut q_out = vec![0.0f32; q_rows];
-    let mut k_out = vec![0.0f32; kv_rows];
-    let mut v_out = vec![0.0f32; v_rows];
-
     let wq_buf = XpuBuffer::from_slice(wq, false);
     let wk_buf = XpuBuffer::from_slice(wk, false);
     let wv_buf = XpuBuffer::from_slice(wv, false);
@@ -84,32 +95,54 @@ pub fn encode_fused_q4k_q6k(
     let mut k_buf = XpuBuffer::new_device(kv_rows * 4);
     let mut v_buf = XpuBuffer::new_device(v_rows  * 4);
 
-    unsafe {
-        xpu_ffi::dll_q4k_q6k_qkv_proj(
-            wq_buf.as_ptr_type(),
-            wk_buf.as_ptr_type(),
-            wv_buf.as_ptr_type(),
-            x_buf.as_ptr_type(),
-            q_buf.as_mut_ptr_type(),
-            k_buf.as_mut_ptr_type(),
-            v_buf.as_mut_ptr_type(),
-            q_rows  as u32,
-            kv_rows as u32,
-            v_rows  as u32,
-            hidden  as u32,
-        );
-    }
+    encode_fused_q4k_q6k_buf(
+        &wq_buf, &wk_buf, &wv_buf,
+        &x_buf,
+        &mut q_buf, &mut k_buf, &mut v_buf,
+        q_rows, kv_rows, v_rows, hidden,
+    );
 
+    let mut q_out = vec![0.0f32; q_rows];
+    let mut k_out = vec![0.0f32; kv_rows];
+    let mut v_out = vec![0.0f32; v_rows];
     q_buf.copy_to_slice(&mut q_out);
     k_buf.copy_to_slice(&mut k_out);
     v_buf.copy_to_slice(&mut v_out);
     (q_out, k_out, v_out)
 }
 
+/// Zero-copy Fused Q4_K Q/K + Q6_K V projection from existing buffers.
+pub fn encode_fused_q4k_q6k_buf(
+    wq: &XpuBuffer,
+    wk: &XpuBuffer,
+    wv: &XpuBuffer,
+    x: &XpuBuffer,
+    q_out: &mut XpuBuffer,
+    k_out: &mut XpuBuffer,
+    v_out: &mut XpuBuffer,
+    q_rows: usize,
+    kv_rows: usize,
+    v_rows: usize,
+    hidden: usize,
+) {
+    unsafe {
+        xpu_ffi::dll_q4k_q6k_qkv_proj(
+            wq.as_ptr_type(),
+            wk.as_ptr_type(),
+            wv.as_ptr_type(),
+            x.as_ptr_type(),
+            q_out.as_mut_ptr_type(),
+            k_out.as_mut_ptr_type(),
+            v_out.as_mut_ptr_type(),
+            q_rows  as u32,
+            kv_rows as u32,
+            v_rows  as u32,
+            hidden  as u32,
+        );
+    }
+}
+
 /// Per-projection QKV via separate `q4_vecmat` calls.
-///
-/// For fully mixed formats or when a fused path isn't available.
-/// Each weight is Q4-packed f32-input path.
 pub fn encode_per_proj(
     wq: &[u8],
     wk: &[u8],
@@ -119,27 +152,56 @@ pub fn encode_per_proj(
     kv_rows: usize,
     hidden: usize,
 ) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
-    let x_buf = XpuBuffer::from_slice(x, false);
+    let wq_buf = XpuBuffer::from_slice(wq, false);
+    let wk_buf = XpuBuffer::from_slice(wk, false);
+    let wv_buf = XpuBuffer::from_slice(wv, false);
+    let x_buf  = XpuBuffer::from_slice(x, false);
+    let mut q_buf = XpuBuffer::new_device(q_rows  * 4);
+    let mut k_buf = XpuBuffer::new_device(kv_rows * 4);
+    let mut v_buf = XpuBuffer::new_device(kv_rows * 4);
 
-    let dispatch = |w: &[u8], rows: usize| -> Vec<f32> {
-        let mut out = vec![0.0f32; rows];
-        let w_buf = XpuBuffer::from_slice(w, false);
-        let mut out_buf = XpuBuffer::new_device(rows * 4);
+    encode_per_proj_buf(
+        &wq_buf, &wk_buf, &wv_buf,
+        &x_buf,
+        &mut q_buf, &mut k_buf, &mut v_buf,
+        q_rows, kv_rows, hidden,
+    );
+
+    let mut q_out = vec![0.0f32; q_rows];
+    let mut k_out = vec![0.0f32; kv_rows];
+    let mut v_out = vec![0.0f32; kv_rows];
+    q_buf.copy_to_slice(&mut q_out);
+    k_buf.copy_to_slice(&mut k_out);
+    v_buf.copy_to_slice(&mut v_out);
+    (q_out, k_out, v_out)
+}
+
+/// Zero-copy Per-projection QKV from existing buffers.
+pub fn encode_per_proj_buf(
+    wq: &XpuBuffer,
+    wk: &XpuBuffer,
+    wv: &XpuBuffer,
+    x: &XpuBuffer,
+    q_out: &mut XpuBuffer,
+    k_out: &mut XpuBuffer,
+    v_out: &mut XpuBuffer,
+    q_rows: usize,
+    kv_rows: usize,
+    hidden: usize,
+) {
+    let mut dispatch = |w: &XpuBuffer, rows: usize, out: &mut XpuBuffer| {
         unsafe {
             xpu_ffi::q4_vecmat(
-                w_buf.as_ptr_type(),
-                x_buf.as_ptr_type(),
-                out_buf.as_mut_ptr_type(),
+                w.as_ptr_type(),
+                x.as_ptr_type(),
+                out.as_mut_ptr_type(),
                 rows,
                 hidden,
             );
         }
-        out_buf.copy_to_slice(&mut out);
-        out
     };
 
-    let q_out = dispatch(wq, q_rows);
-    let k_out = dispatch(wk, kv_rows);
-    let v_out = dispatch(wv, kv_rows);
-    (q_out, k_out, v_out)
+    dispatch(wq, q_rows, q_out);
+    dispatch(wk, kv_rows, k_out);
+    dispatch(wv, kv_rows, v_out);
 }

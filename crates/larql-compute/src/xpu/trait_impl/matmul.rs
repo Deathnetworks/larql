@@ -30,6 +30,16 @@ impl MatMul for XpuBackend {
             return None;
         }
 
-        Some(f32_gemv::dispatch(w.as_slice()?, x, n, k))
+        let w_data = w.as_slice()?;
+        let buf_w = self.bufs.get_f32(w_data);
+        let buf_x = self.bufs.get_f32(x);
+        let mut buf_out = self.bufs.output(n * 4);
+
+        crate::xpu::ops::f32_gemv::dispatch_buf(&buf_w, &buf_x, &mut buf_out, n, k);
+
+        let mut out = vec![0.0f32; n];
+        buf_out.copy_to_slice(&mut out);
+        self.bufs.recycle(buf_out);
+        Some(out)
     }
 }

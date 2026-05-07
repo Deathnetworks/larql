@@ -28,25 +28,17 @@ pub fn ffn_gate_up_fused(
     n: usize,
     k: usize,
 ) -> (Vec<f32>, Vec<f32>) {
-    let out_size = n * std::mem::size_of::<f32>();
-
     let gate_buf = XpuBuffer::from_slice(gate_q4, false);
     let up_buf = XpuBuffer::from_slice(up_q4, false);
     let x_buf = XpuBuffer::from_slice(x, false);
-    let mut g_out_buf = XpuBuffer::new_device(out_size);
-    let mut u_out_buf = XpuBuffer::new_device(out_size);
+    let mut g_out_buf = XpuBuffer::new_device(n * 4);
+    let mut u_out_buf = XpuBuffer::new_device(n * 4);
 
-    unsafe {
-        xpu_ffi::q4k_ffn_gate_up(
-            gate_buf.as_ptr_type(),
-            up_buf.as_ptr_type(),
-            x_buf.as_ptr_type(),
-            g_out_buf.as_mut_ptr_type(),
-            u_out_buf.as_mut_ptr_type(),
-            n,
-            k,
-        );
-    }
+    pair_batch_buf(
+        &gate_buf, &up_buf, &x_buf,
+        &mut g_out_buf, &mut u_out_buf,
+        1, n, k
+    );
 
     let mut gate_out = vec![0.0f32; n];
     let mut up_out = vec![0.0f32; n];
@@ -56,16 +48,41 @@ pub fn ffn_gate_up_fused(
     (gate_out, up_out)
 }
 
+/// Zero-copy Batched gate+up from existing buffers.
+///
+/// - `gate_q4 / up_q4`: Q4K weights
+/// - `x_matrix`: `[seq_len * hidden]` in device memory
+/// - `gate_results / up_results`: `[seq_len * num_rows]` in device memory
+pub fn pair_batch_buf(
+    gate_q4: &XpuBuffer,
+    up_q4: &XpuBuffer,
+    x_matrix: &XpuBuffer,
+    gate_results: &mut XpuBuffer,
+    up_results: &mut XpuBuffer,
+    seq_len: usize,
+    num_rows: usize,
+    hidden: usize,
+) {
+    for s in 0..seq_len {
+        let x_ptr = unsafe { x_matrix.as_ptr_type::<f32>().add(s * hidden) };
+        let g_ptr = unsafe { gate_results.as_mut_ptr_type::<f32>().add(s * num_rows) };
+        let u_ptr = unsafe { up_results.as_mut_ptr_type::<f32>().add(s * num_rows) };
+
+        unsafe {
+            xpu_ffi::q4k_ffn_gate_up(
+                gate_q4.as_ptr_type(),
+                up_q4.as_ptr_type(),
+                x_ptr as *const f32,
+                g_ptr as *mut f32,
+                u_ptr as *mut f32,
+                num_rows,
+                hidden,
+            );
+        }
+    }
+}
+
 /// Batched gate+up for multiple sequence positions.
-///
-/// Loops over `seq_len` positions in `x_matrix` and calls `ffn_gate_up_fused`
-/// per position. Unlike Metal which encodes all into one command buffer,
-/// SYCL's fused kernel handles ordering internally — the loop here batches
-/// at the Rust dispatch level.
-///
-/// - `gate_q4 / up_q4`: Q4K weights (shared across all positions)
-/// - `x_matrix`: `[seq_len * k]` flattened row-major
-/// - Returns: `(gate_results[seq_len][n], up_results[seq_len][n])`
 pub fn pair_batch(
     gate_q4: &[u8],
     up_q4: &[u8],
@@ -74,39 +91,30 @@ pub fn pair_batch(
     num_rows: usize,
     hidden: usize,
 ) -> (Vec<Vec<f32>>, Vec<Vec<f32>>) {
-    let out_size = num_rows * std::mem::size_of::<f32>();
-
-    // Pre-upload weight buffers (reused across positions)
     let gate_buf = XpuBuffer::from_slice(gate_q4, false);
     let up_buf = XpuBuffer::from_slice(up_q4, false);
+    let x_buf = XpuBuffer::from_slice(x_matrix, false);
+    
+    let mut g_out_buf = XpuBuffer::new_device(seq_len * num_rows * 4);
+    let mut u_out_buf = XpuBuffer::new_device(seq_len * num_rows * 4);
+
+    pair_batch_buf(
+        &gate_buf, &up_buf, &x_buf,
+        &mut g_out_buf, &mut u_out_buf,
+        seq_len, num_rows, hidden
+    );
 
     let mut gate_results = Vec::with_capacity(seq_len);
     let mut up_results = Vec::with_capacity(seq_len);
+    
+    let mut g_flat = vec![0.0f32; seq_len * num_rows];
+    let mut u_flat = vec![0.0f32; seq_len * num_rows];
+    g_out_buf.copy_to_slice(&mut g_flat);
+    u_out_buf.copy_to_slice(&mut u_flat);
 
     for s in 0..seq_len {
-        let x_slice = &x_matrix[s * hidden..(s + 1) * hidden];
-        let x_buf = XpuBuffer::from_slice(x_slice, false);
-        let mut g_out_buf = XpuBuffer::new_device(out_size);
-        let mut u_out_buf = XpuBuffer::new_device(out_size);
-
-        unsafe {
-            xpu_ffi::q4k_ffn_gate_up(
-                gate_buf.as_ptr_type(),
-                up_buf.as_ptr_type(),
-                x_buf.as_ptr_type(),
-                g_out_buf.as_mut_ptr_type(),
-                u_out_buf.as_mut_ptr_type(),
-                num_rows,
-                hidden,
-            );
-        }
-
-        let mut g = vec![0.0f32; num_rows];
-        let mut u = vec![0.0f32; num_rows];
-        g_out_buf.copy_to_slice(&mut g);
-        u_out_buf.copy_to_slice(&mut u);
-        gate_results.push(g);
-        up_results.push(u);
+        gate_results.push(g_flat[s * num_rows..(s + 1) * num_rows].to_vec());
+        up_results.push(u_flat[s * num_rows..(s + 1) * num_rows].to_vec());
     }
 
     (gate_results, up_results)

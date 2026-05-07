@@ -19,8 +19,8 @@ pub fn dispatch(
     let queue = backend.queue();
     println!("Vulkan Gemv: n={}, k={}", n, k);
     
-    let pipeline = backend.f32_gemv_pipeline.clone();
-    println!("Pipeline retrieved.");
+    let kernel = backend.f32_gemv_pipeline.clone();
+    let pipeline = &kernel.pipeline;
 
     let mut out = vec![0.0f32; n as usize];
     
@@ -69,7 +69,7 @@ pub fn dispatch(
         .unwrap()
         .push_constants(pipeline.layout().clone(), 0, push_constants)
         .unwrap()
-        .dispatch([n, 1, 1])
+        .dispatch([n.div_ceil(kernel.rows_per_tg), 1, 1])
         .unwrap();
 
     let command_buffer = builder.build().ok()?;

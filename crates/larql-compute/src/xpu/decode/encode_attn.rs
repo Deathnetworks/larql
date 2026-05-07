@@ -42,8 +42,6 @@ impl XpuBackend {
             ffn_uses_q4k,
         } = dims;
 
-        let layer_kv_dim = layer.num_kv_heads * layer.head_dim;
-
         let flags = crate::xpu::stages::attention::Flags {
             window_size: layer.sliding_window as u32,
             rms_eps: if layer.q_norm_weight.is_some() { layer.eps } else { 0.0 },
@@ -52,27 +50,20 @@ impl XpuBackend {
             rotary_dim: if layer.rotary_dim > 0 { layer.rotary_dim as u32 } else { layer.head_dim as u32 },
         };
 
-        let mut q_in_f32 = vec![0.0f32; layer_q_dim];
-        let mut k_in_f32 = vec![0.0f32; layer_kv_dim];
-        let mut v_in_f32 = vec![0.0f32; layer_kv_dim];
-        
-        bufs.q_out.copy_to_slice(&mut q_in_f32);
-        bufs.k_out.copy_to_slice(&mut k_in_f32);
-        bufs.v_out.copy_to_slice(&mut v_in_f32);
-
-        let q_w_f32 = layer.q_norm_weight.unwrap_or(&[]);
-        let k_w_f32 = layer.k_norm_weight.unwrap_or(&[]);
+        let q_norm_w = layer.q_norm_weight.map(|w| self.bufs.get_f32(w)).unwrap_or_else(|| std::sync::Arc::new(XpuBuffer::new_device(0)));
+        let k_norm_w = layer.k_norm_weight.map(|w| self.bufs.get_f32(w)).unwrap_or_else(|| std::sync::Arc::new(XpuBuffer::new_device(0)));
 
         let pos = kv_cache.layers[layer_idx].current_len;
 
         // Fused Attention (QK-norm, RoPE, Append, Attend)
-        let attn_out_f32 = crate::xpu::stages::attention::encode(
-            &q_in_f32,
-            &k_in_f32,
-            &v_in_f32,
-            q_w_f32,
-            k_w_f32,
+        crate::xpu::stages::attention::encode_buf(
+            bufs.q_out,
+            bufs.k_out,
+            bufs.v_out,
+            &q_norm_w,
+            &k_norm_w,
             &mut kv_cache.layers[layer_idx],
+            bufs.attn_out_buf,
             pos,
             layer.num_q_heads,
             layer.num_kv_heads,
@@ -81,42 +72,36 @@ impl XpuBackend {
             flags,
         );
 
-        bufs.attn_out_buf.copy_from_slice(&attn_out_f32);
-
         // O projection
-        let mut wo_bytes = vec![0u8; layer.wo.data.len()];
-        bufs.wo.copy_to_slice(&mut wo_bytes);
-        
-        let o_out_f32 = if layer.wo.format == crate::QuantFormat::Q6_K {
-            crate::xpu::stages::o_proj::encode_q6k(
-                &wo_bytes,
-                &attn_out_f32,
+        if layer.wo.format == crate::QuantFormat::Q6_K {
+            crate::xpu::stages::o_proj::encode_q6k_buf(
+                bufs.wo,
+                bufs.attn_out_buf,
+                bufs.o_out_buf,
                 layer_q_dim,
                 hidden,
-            )
+            );
         } else {
-            crate::xpu::stages::o_proj::encode(
-                &wo_bytes,
-                &attn_out_f32,
+            crate::xpu::stages::o_proj::encode_buf(
+                bufs.wo,
+                bufs.attn_out_buf,
+                bufs.o_out_buf,
                 layer_q_dim,
                 hidden,
-            )
-        };
-
-        bufs.o_out_buf.copy_from_slice(&o_out_f32);
+            );
+        }
 
         // Residual + norm
-        let pre_ffn_norm_f32 = layer.pre_ffn_norm.unwrap_or(&[]);
-        let post_attn_norm_f32 = layer.post_attn_norm;
+        let pre_ffn_norm = layer.pre_ffn_norm.map(|w| self.bufs.get_f32(w)).unwrap_or_else(|| std::sync::Arc::new(XpuBuffer::new_device(0)));
+        let post_attn_norm = layer.post_attn_norm.map(|w| self.bufs.get_f32(w)).unwrap_or_else(|| std::sync::Arc::new(XpuBuffer::new_device(0)));
         
-        let mut h_buf_f32 = vec![0.0f32; hidden];
-        bufs.h_buf.copy_to_slice(&mut h_buf_f32);
-
-        let (h_post_attn_f32, ffn_norm_out_f32) = crate::xpu::stages::residual::encode_post_attn(
-            &h_buf_f32,
-            &o_out_f32,
-            post_attn_norm_f32,
-            pre_ffn_norm_f32,
+        crate::xpu::stages::residual::encode_post_attn_buf(
+            bufs.h_buf,
+            bufs.o_out_buf,
+            &post_attn_norm,
+            &pre_ffn_norm,
+            bufs.h_post_attn,
+            bufs.ffn_norm_out,
             1, // seq_len
             hidden,
             layer.eps,
@@ -124,14 +109,11 @@ impl XpuBackend {
             layer.has_post_norms,
         );
 
-        bufs.h_post_attn.copy_from_slice(&h_post_attn_f32);
-        bufs.ffn_norm_out.copy_from_slice(&ffn_norm_out_f32);
-
         if !ffn_uses_q4k {
             // Re-quantize for Q8 FFN
-            crate::xpu::stages::input_norm::encode_q8(
-                &ffn_norm_out_f32,
-                &[], // no additional norm weight needed here
+            crate::xpu::stages::input_norm::encode_q8_buf(
+                bufs.ffn_norm_out,
+                &XpuBuffer::new_device(0), // No additional norm weight
                 bufs.ffn_q8,
                 bufs.ffn_q8s,
                 hidden,

@@ -28,15 +28,6 @@ pub struct Flags {
 }
 
 /// Dispatch fused attention into the KV cache layer.
-///
-/// Returns attention output `[num_q_heads × head_dim]` as f32.
-///
-/// The SYCL `attn_fused` kernel:
-/// 1. Appends `k_in/v_in` at position `pos` in the cache
-/// 2. Applies RoPE to Q/K (if rope_base > 0)
-/// 3. Computes scaled dot-product attention over cache
-/// 4. Writes to `out`
-#[allow(clippy::too_many_arguments)]
 pub fn encode(
     q_in: &[f32],
     k_in: &[f32],
@@ -51,26 +42,53 @@ pub fn encode(
     scale: f32,
     flags: Flags,
 ) -> Vec<f32> {
-    let out_len = num_q_heads * head_dim;
-    let mut out = vec![0.0f32; out_len];
-
     let q_buf  = XpuBuffer::from_slice(q_in, false);
     let k_buf  = XpuBuffer::from_slice(k_in, false);
     let v_buf  = XpuBuffer::from_slice(v_in, false);
     let qw_buf = XpuBuffer::from_slice(q_weight, false);
     let kw_buf = XpuBuffer::from_slice(k_weight, false);
-    let mut out_buf = XpuBuffer::new_device(out_len * std::mem::size_of::<f32>());
+    let out_len = num_q_heads * head_dim;
+    let mut out_buf = XpuBuffer::new_device(out_len * 4);
 
+    encode_buf(
+        &q_buf, &k_buf, &v_buf,
+        &qw_buf, &kw_buf,
+        cache, &mut out_buf,
+        pos, num_q_heads, num_kv_heads, head_dim, scale, flags,
+    );
+
+    let mut out = vec![0.0f32; out_len];
+    out_buf.copy_to_slice(&mut out);
+    out
+}
+
+/// Zero-copy Fused attention from existing buffers.
+#[allow(clippy::too_many_arguments)]
+pub fn encode_buf(
+    q_in: &XpuBuffer,
+    k_in: &XpuBuffer,
+    v_in: &XpuBuffer,
+    q_weight: &XpuBuffer,
+    k_weight: &XpuBuffer,
+    cache: &mut LayerKVCache,
+    out: &mut XpuBuffer,
+    pos: usize,
+    num_q_heads: usize,
+    num_kv_heads: usize,
+    head_dim: usize,
+    scale: f32,
+    flags: Flags,
+) {
     unsafe {
         xpu_ffi::attn_fused(
-            q_buf.as_ptr_type(),
-            k_buf.as_ptr_type(),
-            v_buf.as_ptr_type(),
+            q_in.as_ptr_type(),
+            k_in.as_ptr_type(),
+            v_in.as_ptr_type(),
             cache.k_ptr(),
             cache.v_ptr(),
-            out_buf.as_mut_ptr_type(),
-            qw_buf.as_ptr_type(),
-            kw_buf.as_ptr_type(),
+            out.as_mut_ptr_type(),
+            q_weight.as_ptr_type(),
+            k_weight.as_ptr_type(),
             pos as u32,
             head_dim as u32,
             num_q_heads as u32,
@@ -83,8 +101,5 @@ pub fn encode(
             flags.rotary_dim,
         );
     }
-
     cache.current_len = (cache.current_len + 1).min(cache.max_seq);
-    out_buf.copy_to_slice(&mut out);
-    out
 }

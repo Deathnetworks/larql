@@ -1,7 +1,7 @@
 //! f32 matmul operations via XPU (SYCL) compute kernels.
 
 use ndarray::{Array2, ArrayView2};
-use super::buffers::BufferCache;
+use super::buffers::{BufferCache, XpuBuffer};
 use super::ffi::ffi as xpu_ffi;
 
 /// Dispatch parameters for f32 matmul.
@@ -26,21 +26,34 @@ impl F32Ops {
         let buf_b = bufs.get_f32(b_data);
         let mut buf_c = bufs.output(m * n * 4);
 
-        unsafe {
-            xpu_ffi::dll_sgemm(
-                buf_a.as_ptr_type(),
-                buf_b.as_ptr_type(),
-                buf_c.as_mut_ptr_type(),
-                m as u32,
-                n as u32,
-                k as u32,
-            );
-        }
+        self.dispatch_notrans_buf(&buf_a, &buf_b, &mut buf_c, m, n, k);
 
         let mut c = vec![0.0f32; m * n];
         buf_c.copy_to_slice(&mut c);
         bufs.recycle(buf_c);
         c
+    }
+
+    /// Zero-copy C = A × B
+    pub fn dispatch_notrans_buf(
+        &self,
+        a: &XpuBuffer,
+        b: &XpuBuffer,
+        c: &mut XpuBuffer,
+        m: usize,
+        n: usize,
+        k: usize,
+    ) {
+        unsafe {
+            xpu_ffi::dll_sgemm(
+                a.as_ptr_type(),
+                b.as_ptr_type(),
+                c.as_mut_ptr_type(),
+                m as u32,
+                n as u32,
+                k as u32,
+            );
+        }
     }
 
     /// C = A × B^T  (A: [m,k], B: [n,k], C: [m,n])
@@ -57,21 +70,34 @@ impl F32Ops {
         let buf_b = bufs.get_f32(b_data);
         let mut buf_c = bufs.output(m * n * 4);
 
-        unsafe {
-            xpu_ffi::dll_sgemm_transb(
-                buf_a.as_ptr_type(),
-                buf_b.as_ptr_type(),
-                buf_c.as_mut_ptr_type(),
-                m as u32,
-                n as u32,
-                k as u32,
-            );
-        }
+        self.dispatch_transb_buf(&buf_a, &buf_b, &mut buf_c, m, n, k);
 
         let mut c = vec![0.0f32; m * n];
         buf_c.copy_to_slice(&mut c);
         bufs.recycle(buf_c);
         c
+    }
+
+    /// Zero-copy C = A × B^T
+    pub fn dispatch_transb_buf(
+        &self,
+        a: &XpuBuffer,
+        b: &XpuBuffer,
+        c: &mut XpuBuffer,
+        m: usize,
+        n: usize,
+        k: usize,
+    ) {
+        unsafe {
+            xpu_ffi::dll_sgemm_transb(
+                a.as_ptr_type(),
+                b.as_ptr_type(),
+                c.as_mut_ptr_type(),
+                m as u32,
+                n as u32,
+                k as u32,
+            );
+        }
     }
 
     /// f32 matmul with automatic GPU/CPU routing.

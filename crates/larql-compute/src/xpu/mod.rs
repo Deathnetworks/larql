@@ -42,14 +42,16 @@ impl XpuBackend {
             let bufs = BufferCache::new();
             let f32_ops = F32Ops::new();
             let q4 = Q4Pipelines { /* stubs */ };
-            Some(Self {
+            let backend = Self {
                 bufs,
                 f32_ops,
                 q4,
                 flop_threshold: AtomicUsize::new(calibrate::DEFAULT_FLOP_THRESHOLD),
                 kv_cache: Mutex::new(None),
                 moe_scratch: Mutex::new(None),
-            })
+            };
+            backend.calibrate();
+            Some(backend)
         } else {
             None
         }

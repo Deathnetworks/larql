@@ -10,53 +10,65 @@ use crate::xpu::ffi::ffi as xpu_ffi;
 use crate::xpu::buffers::XpuBuffer;
 
 /// O-projection: Q4_K weights × f32 attention output → f32 hidden.
-///
-/// - `wo`: packed Q4K weight bytes `[hidden × q_dim / 2]`
-/// - `attn_out`: f32 `[q_dim]`
-/// - `q_dim`: attention output dimension
-/// - `hidden`: output (hidden) dimension
-/// Returns f32 `[hidden]`.
 pub fn encode(wo: &[u8], attn_out: &[f32], q_dim: usize, hidden: usize) -> Vec<f32> {
-    let mut out = vec![0.0f32; hidden];
-
     let w_buf   = XpuBuffer::from_slice(wo, false);
     let in_buf  = XpuBuffer::from_slice(attn_out, false);
     let mut out_buf = XpuBuffer::new_device(hidden * 4);
 
-    unsafe {
-        xpu_ffi::q4k_proj(
-            w_buf.as_ptr_type(),
-            in_buf.as_ptr_type(),
-            out_buf.as_mut_ptr_type(),
-            hidden,
-            q_dim,
-        );
-    }
+    encode_buf(&w_buf, &in_buf, &mut out_buf, q_dim, hidden);
 
+    let mut out = vec![0.0f32; hidden];
     out_buf.copy_to_slice(&mut out);
     out
 }
 
-/// O-projection using Q6_K weights (Gemma 4 Q6K V path).
-///
-/// Uses `q6k_matvec` FFI directly.
-pub fn encode_q6k(wo: &[u8], attn_out: &[f32], q_dim: usize, hidden: usize) -> Vec<f32> {
-    let mut out = vec![0.0f32; hidden];
-
-    let w_buf   = XpuBuffer::from_slice(wo, false);
-    let in_buf  = XpuBuffer::from_slice(attn_out, false);
-    let mut out_buf = XpuBuffer::new_device(hidden * 4);
-
+/// Zero-copy O-projection from existing buffers.
+pub fn encode_buf(
+    wo: &XpuBuffer,
+    attn_out: &XpuBuffer,
+    out: &mut XpuBuffer,
+    q_dim: usize,
+    hidden: usize,
+) {
     unsafe {
-        xpu_ffi::q6k_matvec(
-            w_buf.as_ptr_type(),
-            in_buf.as_ptr_type(),
-            out_buf.as_mut_ptr_type(),
+        xpu_ffi::q4k_proj(
+            wo.as_ptr_type(),
+            attn_out.as_ptr_type(),
+            out.as_mut_ptr_type(),
             hidden,
             q_dim,
         );
     }
+}
 
+/// O-projection using Q6_K weights (Gemma 4 Q6K V path).
+pub fn encode_q6k(wo: &[u8], attn_out: &[f32], q_dim: usize, hidden: usize) -> Vec<f32> {
+    let w_buf   = XpuBuffer::from_slice(wo, false);
+    let in_buf  = XpuBuffer::from_slice(attn_out, false);
+    let mut out_buf = XpuBuffer::new_device(hidden * 4);
+
+    encode_q6k_buf(&w_buf, &in_buf, &mut out_buf, q_dim, hidden);
+
+    let mut out = vec![0.0f32; hidden];
     out_buf.copy_to_slice(&mut out);
     out
+}
+
+/// Zero-copy Q6_K O-projection from existing buffers.
+pub fn encode_q6k_buf(
+    wo: &XpuBuffer,
+    attn_out: &XpuBuffer,
+    out: &mut XpuBuffer,
+    q_dim: usize,
+    hidden: usize,
+) {
+    unsafe {
+        xpu_ffi::q6k_matvec(
+            wo.as_ptr_type(),
+            attn_out.as_ptr_type(),
+            out.as_mut_ptr_type(),
+            hidden,
+            q_dim,
+        );
+    }
 }

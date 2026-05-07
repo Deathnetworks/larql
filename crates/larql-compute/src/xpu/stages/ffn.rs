@@ -21,18 +21,6 @@ pub enum Activation {
 }
 
 /// Gated FFN (Llama / Gemma / Qwen): `down(act(gate) * up)`.
-///
-/// Uses the fused `q4k_ffn_gate_up` kernel for gate+up in one dispatch,
-/// then `dll_geglu_silu` / `dll_geglu_gelu_tanh` for activation,
-/// then `q4k_proj` for down projection.
-///
-/// - `gate/up/down_w`: quantized weight bytes
-/// - `x_norm`: f32 normed activation `[hidden]`
-/// - `gate_fmt / down_fmt`: format for routing down dispatch
-/// - `inter`: intermediate FFN dimension
-/// - `hidden`: output dimension
-/// - Returns: f32 output `[hidden]`
-#[allow(clippy::too_many_arguments)]
 pub fn encode_gated(
     gate_w: &[u8],
     up_w: &[u8],
@@ -44,40 +32,66 @@ pub fn encode_gated(
     inter: usize,
     hidden: usize,
 ) -> Vec<f32> {
-    // 1. Gate + Up via fused kernel
     let xg_buf = XpuBuffer::from_slice(gate_w, false);
     let xu_buf = XpuBuffer::from_slice(up_w, false);
+    let xd_buf = XpuBuffer::from_slice(down_w, false);
     let x_buf  = XpuBuffer::from_slice(x_norm, false);
+    let mut out_buf = XpuBuffer::new_device(hidden * 4);
+
+    encode_gated_buf(
+        &xg_buf, &xu_buf, &xd_buf, &x_buf, &mut out_buf,
+        gate_fmt, down_fmt, activation, inter, hidden,
+    );
+
+    let mut out = vec![0.0f32; hidden];
+    out_buf.copy_to_slice(&mut out);
+    out
+}
+
+/// Zero-copy Gated FFN from existing buffers.
+#[allow(clippy::too_many_arguments)]
+pub fn encode_gated_buf(
+    gate_w: &XpuBuffer,
+    up_w: &XpuBuffer,
+    down_w: &XpuBuffer,
+    x_norm: &XpuBuffer,
+    out: &mut XpuBuffer,
+    gate_fmt: QuantFormat,
+    down_fmt: QuantFormat,
+    activation: Activation,
+    inter: usize,
+    hidden: usize,
+) {
+    // 1. Gate + Up
     let mut g_out = XpuBuffer::new_device(inter * 4);
     let mut u_out = XpuBuffer::new_device(inter * 4);
 
-    // Use fused path for Q4K gate/up, fall back to two q4_vecmat calls otherwise
     if matches!(gate_fmt, QuantFormat::Q4K | QuantFormat::Q4KF) {
         unsafe {
             xpu_ffi::q4k_ffn_gate_up(
-                xg_buf.as_ptr_type(),
-                xu_buf.as_ptr_type(),
-                x_buf.as_ptr_type(),
+                gate_w.as_ptr_type(),
+                up_w.as_ptr_type(),
+                x_norm.as_ptr_type(),
                 g_out.as_mut_ptr_type(),
                 u_out.as_mut_ptr_type(),
                 inter,
-                x_norm.len(),
+                x_norm.size() / 4,
             );
         }
     } else {
         unsafe {
             xpu_ffi::q4_vecmat(
-                xg_buf.as_ptr_type(), x_buf.as_ptr_type(),
-                g_out.as_mut_ptr_type(), inter, x_norm.len(),
+                gate_w.as_ptr_type(), x_norm.as_ptr_type(),
+                g_out.as_mut_ptr_type(), inter, x_norm.size() / 4,
             );
             xpu_ffi::q4_vecmat(
-                xu_buf.as_ptr_type(), x_buf.as_ptr_type(),
-                u_out.as_mut_ptr_type(), inter, x_norm.len(),
+                up_w.as_ptr_type(), x_norm.as_ptr_type(),
+                u_out.as_mut_ptr_type(), inter, x_norm.size() / 4,
             );
         }
     }
 
-    // 2. Activation (SiLU-GEGLU or GELU-tanh-GEGLU)
+    // 2. Activation
     let mut act_out = XpuBuffer::new_device(inter * 4);
     unsafe {
         match activation {
@@ -94,14 +108,11 @@ pub fn encode_gated(
         }
     }
 
-    // 3. Down projection via format-aware dispatch
-    let mut act_slice = vec![0.0f32; inter];
-    act_out.copy_to_slice(&mut act_slice);
-    quant_matvec::encode(down_w, &act_slice, hidden, inter, down_fmt)
+    // 3. Down projection
+    quant_matvec::encode_buf(down_w, &act_out, out, hidden, inter, down_fmt);
 }
 
 /// Standard (non-gated) FFN: `down(act(up))` — StarCoder2.
-#[allow(clippy::too_many_arguments)]
 pub fn encode_standard(
     up_w: &[u8],
     down_w: &[u8],
@@ -112,32 +123,56 @@ pub fn encode_standard(
     inter: usize,
     hidden: usize,
 ) -> Vec<f32> {
-    // 1. Up projection
-    let up_out = quant_matvec::encode(up_w, x_norm, inter, x_norm.len(), up_fmt);
+    let xu_buf = XpuBuffer::from_slice(up_w, false);
+    let xd_buf = XpuBuffer::from_slice(down_w, false);
+    let x_buf  = XpuBuffer::from_slice(x_norm, false);
+    let mut out_buf = XpuBuffer::new_device(hidden * 4);
 
-    // 2. Activation in-place
-    let mut act_slice = vec![0.0f32; inter];
-    {
-        let up_buf = XpuBuffer::from_slice(&up_out, false);
-        let dummy  = XpuBuffer::from_slice(&up_out, false);
-        let mut act_out = XpuBuffer::new_device(inter * 4);
-        unsafe {
-            match activation {
-                Activation::SiLU =>
-                    xpu_ffi::dll_geglu_silu(
-                        up_buf.as_ptr_type(), dummy.as_ptr_type(),
-                        act_out.as_mut_ptr_type(), inter,
-                    ),
-                Activation::GeluTanh =>
-                    xpu_ffi::dll_geglu_gelu_tanh(
-                        up_buf.as_ptr_type(), dummy.as_ptr_type(),
-                        act_out.as_mut_ptr_type(), inter,
-                    ),
-            }
+    encode_standard_buf(
+        &xu_buf, &xd_buf, &x_buf, &mut out_buf,
+        up_fmt, down_fmt, activation, inter, hidden,
+    );
+
+    let mut out = vec![0.0f32; hidden];
+    out_buf.copy_to_slice(&mut out);
+    out
+}
+
+/// Zero-copy Standard FFN from existing buffers.
+#[allow(clippy::too_many_arguments)]
+pub fn encode_standard_buf(
+    up_w: &XpuBuffer,
+    down_w: &XpuBuffer,
+    x_norm: &XpuBuffer,
+    out: &mut XpuBuffer,
+    up_fmt: QuantFormat,
+    down_fmt: QuantFormat,
+    activation: Activation,
+    inter: usize,
+    hidden: usize,
+) {
+    // 1. Up projection
+    let mut up_out = XpuBuffer::new_device(inter * 4);
+    quant_matvec::encode_buf(up_w, x_norm, &mut up_out, inter, x_norm.size() / 4, up_fmt);
+
+    // 2. Activation
+    let mut act_out = XpuBuffer::new_device(inter * 4);
+    let dummy = XpuBuffer::new_device(0); // Geglu needs two inputs, standard ffn has one
+    unsafe {
+        match activation {
+            Activation::SiLU =>
+                xpu_ffi::dll_geglu_silu(
+                    up_out.as_ptr_type(), dummy.as_ptr_type(),
+                    act_out.as_mut_ptr_type(), inter,
+                ),
+            Activation::GeluTanh =>
+                xpu_ffi::dll_geglu_gelu_tanh(
+                    up_out.as_ptr_type(), dummy.as_ptr_type(),
+                    act_out.as_mut_ptr_type(), inter,
+                ),
         }
-        act_out.copy_to_slice(&mut act_slice);
     }
 
     // 3. Down projection
-    quant_matvec::encode(down_w, &act_slice, hidden, inter, down_fmt)
+    quant_matvec::encode_buf(down_w, &act_out, out, hidden, inter, down_fmt);
 }

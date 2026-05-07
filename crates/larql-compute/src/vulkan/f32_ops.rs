@@ -8,18 +8,19 @@ use vulkano::command_buffer::{AutoCommandBufferBuilder, CommandBufferUsage, Prim
 use vulkano::sync::{self, GpuFuture};
 use vulkano::device::{Device, Queue};
 
+use crate::vulkan::kernel::handle::KernelHandle;
 use crate::vulkan::shaders;
 use crate::vulkan::buffers::VulkanBuffer;
 
 pub struct F32Ops {
-    sgemm_pipeline: Arc<vulkano::pipeline::ComputePipeline>,
-    transb_pipeline: Arc<vulkano::pipeline::ComputePipeline>,
+    sgemm_pipeline: KernelHandle,
+    transb_pipeline: KernelHandle,
 }
 
 impl F32Ops {
     pub fn new(device: &Arc<Device>, _queue: &Arc<Queue>) -> Option<Self> {
-        let sgemm_pipeline = super::VulkanBackend::create_compute_pipeline(device, &shaders::sgemm::load(device.clone()).ok()?);
-        let transb_pipeline = super::VulkanBackend::create_compute_pipeline(device, &shaders::sgemm_transb::load(device.clone()).ok()?);
+        let sgemm_pipeline = KernelHandle::new(super::VulkanBackend::create_compute_pipeline(device, &shaders::sgemm::load(device.clone()).ok()?), "main");
+        let transb_pipeline = KernelHandle::new(super::VulkanBackend::create_compute_pipeline(device, &shaders::sgemm_transb::load(device.clone()).ok()?), "main");
 
         Some(Self {
             sgemm_pipeline,
@@ -54,13 +55,14 @@ impl F32Ops {
     fn dispatch_internal(
         &self,
         backend: &super::VulkanBackend,
-        pipeline: &Arc<vulkano::pipeline::ComputePipeline>,
+        kernel: &KernelHandle,
         a_data: &[f32],
         b_data: &[f32],
         m: usize,
         n: usize,
         k: usize,
     ) -> Option<Vec<f32>> {
+        let pipeline = &kernel.pipeline;
         let device = backend.device();
         let queue = backend.queue();
 

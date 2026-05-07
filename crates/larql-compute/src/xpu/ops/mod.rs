@@ -11,3 +11,4 @@ pub mod q4k_matvec;
 pub mod rms_norm;
 pub mod turboquant;
 pub mod q8_quantize;
+pub mod q6k_matvec;

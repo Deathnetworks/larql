@@ -57,16 +57,42 @@ pub fn attn_fused_dispatch(
     let kw_buf = XpuBuffer::from_slice(k_weight, false);
     let mut out_buf = XpuBuffer::new_device(out_len * std::mem::size_of::<f32>());
 
+    dispatch_buf(
+        &q_buf, &k_buf, &v_buf,
+        &qw_buf, &kw_buf,
+        cache, pos, params, &mut out_buf
+    );
+
+    // Advance KV cache position after kernel writes new K/V at `pos`.
+    cache.current_len = (cache.current_len + 1).min(cache.max_seq);
+
+    out_buf.copy_to_slice(&mut out);
+    out
+}
+
+/// Zero-copy fused attention from existing buffers.
+#[allow(clippy::too_many_arguments)]
+pub fn dispatch_buf(
+    q_in: &XpuBuffer,
+    k_in: &XpuBuffer,
+    v_in: &XpuBuffer,
+    q_weight: &XpuBuffer,
+    k_weight: &XpuBuffer,
+    cache: &mut LayerKVCache,
+    pos: usize,
+    params: &AttnFusedParams,
+    out: &mut XpuBuffer,
+) {
     unsafe {
         xpu_ffi::attn_fused(
-            q_buf.as_ptr_type(),
-            k_buf.as_ptr_type(),
-            v_buf.as_ptr_type(),
+            q_in.as_ptr_type(),
+            k_in.as_ptr_type(),
+            v_in.as_ptr_type(),
             cache.k_ptr(),
             cache.v_ptr(),
-            out_buf.as_mut_ptr_type(),
-            qw_buf.as_ptr_type(),
-            kw_buf.as_ptr_type(),
+            out.as_mut_ptr_type(),
+            q_weight.as_ptr_type(),
+            k_weight.as_ptr_type(),
             pos as u32,
             params.head_dim,
             params.num_q_heads,
@@ -79,10 +105,4 @@ pub fn attn_fused_dispatch(
             params.rotary_dim,
         );
     }
-
-    // Advance KV cache position after kernel writes new K/V at `pos`.
-    cache.current_len = (cache.current_len + 1).min(cache.max_seq);
-
-    out_buf.copy_to_slice(&mut out);
-    out
 }

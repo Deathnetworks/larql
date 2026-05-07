@@ -29,6 +29,8 @@ pub mod shaders;
 pub mod stages;
 mod trait_impl;
 
+use crate::vulkan::kernel::handle::KernelHandle;
+use crate::vulkan::kernel::traits::ShaderKernel;
 use f32_ops::F32Ops;
 use ops::q4_common::Q4Pipelines;
 
@@ -45,14 +47,16 @@ pub struct VulkanBackend {
     pub rms_norm_pipeline: Arc<vulkano::pipeline::ComputePipeline>,
     pub silu_pipeline: Arc<vulkano::pipeline::ComputePipeline>,
     pub rope_pipeline: Arc<vulkano::pipeline::ComputePipeline>,
-    pub q4_vecmat_pipeline: Arc<vulkano::pipeline::ComputePipeline>,
-    pub f32_gemv_pipeline: Arc<vulkano::pipeline::ComputePipeline>,
-    pub q4k_matvec_pipeline: Arc<vulkano::pipeline::ComputePipeline>,
-    pub q4k_ffn_gate_up_pipeline: Arc<vulkano::pipeline::ComputePipeline>,
+    pub q4_matvec_pipeline: KernelHandle,
+    pub q4_f32_matvec_pipeline: KernelHandle,
+    pub q4_vecmat_pipeline: KernelHandle,
+    pub f32_gemv_pipeline: KernelHandle,
+    pub q4k_matvec_pipeline: KernelHandle,
+    pub q4k_ffn_gate_up_pipeline: KernelHandle,
     pub attn_fused_pipeline: Arc<vulkano::pipeline::ComputePipeline>,
-    pub q4k_qkv_proj_pipeline: Arc<vulkano::pipeline::ComputePipeline>,
-    pub q4k_q6k_qkv_proj_pipeline: Arc<vulkano::pipeline::ComputePipeline>,
-    pub q6k_matvec_pipeline: Arc<vulkano::pipeline::ComputePipeline>,
+    pub q4k_qkv_proj_pipeline: KernelHandle,
+    pub q4k_q6k_qkv_proj_pipeline: KernelHandle,
+    pub q6k_matvec_pipeline: KernelHandle,
     pub quantize_q8_pipeline: Arc<vulkano::pipeline::ComputePipeline>,
     pub layer_norm_pipeline: Arc<vulkano::pipeline::ComputePipeline>,
     pub residual_ops_pipeline: Arc<vulkano::pipeline::ComputePipeline>,
@@ -64,11 +68,12 @@ pub struct VulkanBackend {
     pub post_ffn_norm_residual_add_pipeline: Arc<vulkano::pipeline::ComputePipeline>,
     pub turboquant_encode_pipeline: Arc<vulkano::pipeline::ComputePipeline>,
     pub turboquant_decode_pipeline: Arc<vulkano::pipeline::ComputePipeline>,
-    pub sgemm_pipeline: Arc<vulkano::pipeline::ComputePipeline>,
-    pub sgemm_transb_pipeline: Arc<vulkano::pipeline::ComputePipeline>,
-    pub q4_sparse_matvec_pipeline: Arc<vulkano::pipeline::ComputePipeline>,
-    pub q4k_matvec_stride32_pipeline: Arc<vulkano::pipeline::ComputePipeline>,
-    pub q8_matvec_pipeline: Arc<vulkano::pipeline::ComputePipeline>,
+    pub sgemm_pipeline: KernelHandle,
+    pub sgemm_transb_pipeline: KernelHandle,
+    pub geglu_pipeline: Arc<vulkano::pipeline::ComputePipeline>,
+    pub q4_sparse_matvec_pipeline: KernelHandle,
+    pub q4k_matvec_stride32_pipeline: KernelHandle,
+    pub q8_matvec_pipeline: KernelHandle,
     
     flop_threshold: std::sync::atomic::AtomicUsize,
     kv_cache: std::sync::Mutex<Option<ops::kv_cache::KVCache>>,
@@ -139,14 +144,19 @@ impl VulkanBackend {
             let rms_norm_pipeline = Self::create_compute_pipeline(device, &shaders::rms_norm::load(device.clone()).expect("rms_norm shader"));
             let silu_pipeline = Self::create_compute_pipeline(device, &shaders::silu::load(device.clone()).expect("silu shader"));
             let rope_pipeline = Self::create_compute_pipeline(device, &shaders::rope::load(device.clone()).expect("rope shader"));
-            let q4_vecmat_pipeline = Self::create_compute_pipeline(device, &shaders::q4_vecmat::load(device.clone()).expect("q4_vecmat shader"));
-            let f32_gemv_pipeline = Self::create_compute_pipeline(device, &shaders::f32_gemv::load(device.clone()).expect("f32_gemv shader"));
-            let q4k_matvec_pipeline = Self::create_compute_pipeline(device, &shaders::q4k_matvec::load(device.clone()).expect("q4k_matvec shader"));
-            let q4k_ffn_gate_up_pipeline = Self::create_compute_pipeline(device, &shaders::q4k_ffn_gate_up::load(device.clone()).expect("q4k_ffn_gate_up shader"));
+            
+            let q4_matvec_pipeline = KernelHandle::with_geometry(Self::create_compute_pipeline(device, &shaders::q4_matvec::load(device.clone()).expect("q4_matvec shader")), "main", 1, 32);
+            let q4_f32_matvec_pipeline = KernelHandle::with_geometry(Self::create_compute_pipeline(device, &shaders::q4_f32_matvec::load(device.clone()).expect("q4_f32_matvec shader")), "main", 1, 32);
+            let q4_vecmat_pipeline = KernelHandle::new(Self::create_compute_pipeline(device, &shaders::q4_vecmat::load(device.clone()).expect("q4_vecmat shader")), "main");
+            let f32_gemv_pipeline = KernelHandle::with_geometry(Self::create_compute_pipeline(device, &shaders::f32_gemv::load(device.clone()).expect("f32_gemv shader")), "main", 8, 256);
+            let q4k_matvec_pipeline = KernelHandle::with_geometry(Self::create_compute_pipeline(device, &shaders::q4k_matvec::load(device.clone()).expect("q4k_matvec shader")), "main", 8, 256);
+            let q4k_ffn_gate_up_pipeline = KernelHandle::with_geometry(Self::create_compute_pipeline(device, &shaders::q4k_ffn_gate_up::load(device.clone()).expect("q4k_ffn_gate_up shader")), "main", 8, 256);
+            
             let attn_fused_pipeline = Self::create_compute_pipeline(device, &shaders::attn_fused::load(device.clone()).expect("attn_fused shader"));
-            let q4k_qkv_proj_pipeline = Self::create_compute_pipeline(device, &shaders::q4k_qkv_proj::load(device.clone()).expect("q4k_qkv_proj shader"));
-            let q4k_q6k_qkv_proj_pipeline = Self::create_compute_pipeline(device, &shaders::q4k_q6k_qkv_proj::load(device.clone()).expect("q4k_q6k_qkv_proj shader"));
-            let q6k_matvec_pipeline = Self::create_compute_pipeline(device, &shaders::q6k_matvec::load(device.clone()).expect("q6k_matvec shader"));
+            let q4k_qkv_proj_pipeline = KernelHandle::with_geometry(Self::create_compute_pipeline(device, &shaders::q4k_qkv_proj::load(device.clone()).expect("q4k_qkv_proj shader")), "main", 8, 256);
+            let q4k_q6k_qkv_proj_pipeline = KernelHandle::with_geometry(Self::create_compute_pipeline(device, &shaders::q4k_q6k_qkv_proj::load(device.clone()).expect("q4k_q6k_qkv_proj shader")), "main", 8, 256);
+            let q6k_matvec_pipeline = KernelHandle::with_geometry(Self::create_compute_pipeline(device, &shaders::q6k_matvec::load(device.clone()).expect("q6k_matvec shader")), "main", 8, 256);
+            
             let quantize_q8_pipeline = Self::create_compute_pipeline(device, &shaders::quantize_q8::load(device.clone()).expect("quantize_q8 shader"));
             let layer_norm_pipeline = Self::create_compute_pipeline(device, &shaders::layer_norm::load(device.clone()).expect("layer_norm shader"));
             let residual_ops_pipeline = Self::create_compute_pipeline(device, &shaders::residual_ops::load(device.clone()).expect("residual_ops shader"));
@@ -158,13 +168,15 @@ impl VulkanBackend {
             let post_ffn_norm_residual_add_pipeline = Self::create_compute_pipeline(device, &shaders::post_ffn_norm_residual_add::load(device.clone()).expect("post_ffn_norm_residual_add shader"));
             let turboquant_encode_pipeline = Self::create_compute_pipeline(device, &shaders::turboquant_encode::load(device.clone()).expect("turboquant_encode shader"));
             let turboquant_decode_pipeline = Self::create_compute_pipeline(device, &shaders::turboquant_decode::load(device.clone()).expect("turboquant_decode shader"));
-            let sgemm_pipeline = Self::create_compute_pipeline(device, &shaders::sgemm::load(device.clone()).expect("sgemm shader"));
-            let sgemm_transb_pipeline = Self::create_compute_pipeline(device, &shaders::sgemm_transb::load(device.clone()).expect("sgemm_transb shader"));
-            let q4_sparse_matvec_pipeline = Self::create_compute_pipeline(device, &shaders::q4_sparse_matvec::load(device.clone()).expect("q4_sparse_matvec shader"));
-            let q4k_matvec_stride32_pipeline = Self::create_compute_pipeline(device, &shaders::q4k_matvec_stride32::load(device.clone()).expect("q4k_matvec_stride32 shader"));
-            let q8_matvec_pipeline = Self::create_compute_pipeline(device, &shaders::q8_matvec::load(device.clone()).expect("q8_matvec shader"));
+            
+            let sgemm_pipeline = KernelHandle::new(Self::create_compute_pipeline(device, &shaders::sgemm::load(device.clone()).expect("sgemm shader")), "main");
+            let sgemm_transb_pipeline = KernelHandle::new(Self::create_compute_pipeline(device, &shaders::sgemm_transb::load(device.clone()).expect("sgemm_transb shader")), "main");
+            let geglu_pipeline = Self::create_compute_pipeline(device, &shaders::geglu::load(device.clone()).expect("geglu shader"));
+            let q4_sparse_matvec_pipeline = KernelHandle::with_geometry(Self::create_compute_pipeline(device, &shaders::q4_sparse_matvec::load(device.clone()).expect("q4_sparse_matvec shader")), "main", 8, 256);
+            let q4k_matvec_stride32_pipeline = KernelHandle::with_geometry(Self::create_compute_pipeline(device, &shaders::q4k_matvec_stride32::load(device.clone()).expect("q4k_matvec_stride32 shader")), "main", 8, 256);
+            let q8_matvec_pipeline = KernelHandle::with_geometry(Self::create_compute_pipeline(device, &shaders::q8_matvec::load(device.clone()).expect("q8_matvec shader")), "main", 8, 256);
 
-            Self {
+            let backend = Self {
                 device: Arc::clone(device),
                 queue: Arc::clone(queue),
                 descriptor_set_allocator: Arc::new(StandardDescriptorSetAllocator::new(device.clone(), Default::default())),
@@ -175,6 +187,8 @@ impl VulkanBackend {
                 rms_norm_pipeline,
                 silu_pipeline,
                 rope_pipeline,
+                q4_matvec_pipeline,
+                q4_f32_matvec_pipeline,
                 q4_vecmat_pipeline,
                 f32_gemv_pipeline,
                 q4k_matvec_pipeline,
@@ -196,19 +210,32 @@ impl VulkanBackend {
                 turboquant_decode_pipeline,
                 sgemm_pipeline,
                 sgemm_transb_pipeline,
+                geglu_pipeline,
                 q4_sparse_matvec_pipeline,
                 q4k_matvec_stride32_pipeline,
                 q8_matvec_pipeline,
                 flop_threshold: std::sync::atomic::AtomicUsize::new(calibrate::DEFAULT_FLOP_THRESHOLD),
                 kv_cache: std::sync::Mutex::new(None),
                 moe_scratch: std::sync::Mutex::new(None),
-            }
+            };
+            backend.calibrate();
+            backend
         })
     }
 
-    /// Create a compute pipeline from a loaded shader module using vulkano 0.34 API.
+    /// Create a compute pipeline from a loaded shader module.
     fn create_compute_pipeline(device: &Arc<Device>, shader_module: &Arc<vulkano::shader::ShaderModule>) -> Arc<ComputePipeline> {
-        let entry_point = shader_module.entry_point("main").expect("Shader missing 'main' entry point");
+        Self::create_compute_pipeline_with_name(device, shader_module, "main")
+    }
+
+    /// Create a compute pipeline with a specific entry point.
+    fn create_compute_pipeline_with_name(
+        device: &Arc<Device>,
+        shader_module: &Arc<vulkano::shader::ShaderModule>,
+        name: &str,
+    ) -> Arc<ComputePipeline> {
+        let entry_point = shader_module.entry_point(name)
+            .expect(&format!("Shader missing '{}' entry point", name));
         let stage = PipelineShaderStageCreateInfo::new(entry_point);
         let layout = PipelineLayout::new(
             device.clone(),
@@ -222,6 +249,26 @@ impl VulkanBackend {
             None,
             ComputePipelineCreateInfo::stage_layout(stage, layout),
         ).expect("Failed to create compute pipeline")
+    }
+
+    /// Create a KernelHandle for a tiled kernel.
+    fn create_kernel_handle<T: ShaderKernel>(
+        device: &Arc<Device>,
+        shader_module: &Arc<vulkano::shader::ShaderModule>,
+        rows_per_tg: u32,
+        threads_per_tg: u32,
+    ) -> KernelHandle {
+        let pipeline = Self::create_compute_pipeline_with_name(device, shader_module, T::KERNEL_NAME);
+        KernelHandle::with_geometry(pipeline, T::KERNEL_NAME, rows_per_tg, threads_per_tg)
+    }
+
+    /// Create a KernelHandle for a flat kernel.
+    fn create_flat_handle<T: ShaderKernel>(
+        device: &Arc<Device>,
+        shader_module: &Arc<vulkano::shader::ShaderModule>,
+    ) -> KernelHandle {
+        let pipeline = Self::create_compute_pipeline_with_name(device, shader_module, T::KERNEL_NAME);
+        KernelHandle::new(pipeline, T::KERNEL_NAME)
     }
 
     // ── Accessor methods (used by all ops/* and stages/* files) ──
